@@ -21,6 +21,11 @@ class Puzzle:
     prompt: str
     _accept: tuple[str, ...]  # accepted answers (case-insensitive, stripped)
 
+    @property
+    def hint_answer(self) -> str:
+        """Primary accepted answer, used by the engine for hint generation."""
+        return self._accept[0] if self._accept else ""
+
     def check(self, answer: str, state: dict[str, Any]) -> bool:
         return answer.strip().lower() in self._accept
 

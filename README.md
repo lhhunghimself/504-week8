@@ -7,13 +7,47 @@ A hacker-themed terminal quiz maze game. Navigate a network of cybersecurity nod
 ## Requirements
 
 - Python 3.10+
-- Install dependencies:
+- Install Python dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-`requirements.txt` installs `sqlmodel` (SQLite ORM) and `pytest`.
+`requirements.txt` installs `sqlmodel` (SQLite ORM), `pytest`, `PyQt6`, and `pytest-qt`.
+
+### Godot 4 (optional — for 3D maze renderer)
+
+The 3D first-person maze view requires [Godot 4.2+](https://godotengine.org/download). Without it, the GUI falls back to a 2D grid.
+
+**Linux:**
+
+```bash
+# Option A: Snap (recommended)
+sudo snap install godot-4
+
+# Option B: Manual download
+wget https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_linux.x86_64.zip
+unzip Godot_v4.4.1-stable_linux.x86_64.zip
+sudo mv Godot_v4.4.1-stable_linux.x86_64 /usr/local/bin/godot
+```
+
+**macOS:**
+
+```bash
+brew install --cask godot
+```
+
+**Windows:**
+
+Download the installer from [godotengine.org/download](https://godotengine.org/download/windows/) and add the install directory to your PATH.
+
+**Verify installation:**
+
+```bash
+godot --version    # should print 4.x.x
+```
+
+The game auto-detects Godot on your PATH. If not found, the 2D QPainter grid is used instead.
 
 ---
 
@@ -62,10 +96,7 @@ Requires `PyQt6` to be installed. Falls back to CLI mode if unavailable.
 
 When Godot 4 is installed, the GUI launches a separate first-person 3D window (Doom/Duke Nukem style) alongside the PyQt forms. The two processes communicate via WebSocket.
 
-**Setup:**
-
-1. Install [Godot 4.2+](https://godotengine.org/download) and ensure `godot` is on your PATH
-2. The Godot project lives in `godot_maze/` — no manual setup needed
+**Setup:** Install Godot 4.2+ (see [Requirements](#godot-4-optional--for-3d-maze-renderer) above). The Godot project lives in `godot_maze/` — no manual setup needed.
 
 **Usage:**
 

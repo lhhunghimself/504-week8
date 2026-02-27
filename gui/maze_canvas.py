@@ -88,7 +88,7 @@ class _CellState:
 
 def _find_godot() -> str | None:
     """Return the path to the Godot executable, or None."""
-    for name in ("godot", "godot4", "Godot_v4"):
+    for name in ("godot", "godot4", "godot-4", "Godot_v4"):
         path = shutil.which(name)
         if path:
             return path
@@ -111,19 +111,32 @@ class MazeCanvas(QWidget):
 
         # Godot bridge state
         self._godot_exe = _find_godot() if use_godot else None
-        self._godot_available = (
-            self._godot_exe is not None
-            and _HAS_WEBSOCKETS
-            and GODOT_PROJECT_DIR.is_dir()
-        )
+        self._fallback_reason = self._check_godot_fallback(use_godot)
+        self._godot_available = self._fallback_reason is None
         self._ws_server: QWebSocketServer | None = None
         self._ws_client: QWebSocket | None = None
         self._godot_process: QProcess | None = None
         self._ws_port: int = 0
         self._pending_snapshot_json: str | None = None
 
+        if self._fallback_reason:
+            log.warning("3D mode unavailable: %s", self._fallback_reason)
+
         if self._godot_available:
             self._start_ws_server()
+
+    def _check_godot_fallback(self, use_godot: bool) -> str | None:
+        """Return a human-readable reason for 2D fallback, or None if 3D is OK."""
+        if not use_godot:
+            return "3D disabled (--no-godot flag)"
+        if self._godot_exe is None:
+            return ("Godot not found on PATH — install Godot 4.2+ and ensure "
+                    "'godot' is on your PATH (see README)")
+        if not _HAS_WEBSOCKETS:
+            return "PyQt6-WebSockets not installed (pip install PyQt6-WebSockets)"
+        if not GODOT_PROJECT_DIR.is_dir():
+            return f"Godot project directory not found: {GODOT_PROJECT_DIR}"
+        return None
 
     # -- WebSocket server (Python side) -------------------------------------
 
@@ -138,7 +151,8 @@ class MazeCanvas(QWidget):
             self._ws_server.newConnection.connect(self._on_godot_connected)
             log.info("WebSocket server listening on port %d", self._ws_port)
         else:
-            log.warning("Failed to start WebSocket server — falling back to 2D")
+            self._fallback_reason = "Failed to start WebSocket server"
+            log.warning("3D mode unavailable: %s", self._fallback_reason)
             self._godot_available = False
 
     def _on_godot_connected(self) -> None:
@@ -307,7 +321,22 @@ class MazeCanvas(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         for (r, c), state in self._cells.items():
             self._draw_cell(painter, r, c, state)
+        if self._fallback_reason:
+            self._draw_fallback_banner(painter)
         painter.end()
+
+    def _draw_fallback_banner(self, painter: QPainter) -> None:
+        banner_h = 22
+        w = self.width()
+        painter.fillRect(QRectF(0, 0, w, banner_h), QColor(40, 40, 40, 200))
+        font = QFont("monospace", 9)
+        painter.setFont(font)
+        painter.setPen(QColor(255, 200, 60))
+        painter.drawText(
+            QRectF(4, 0, w - 8, banner_h),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            f"2D fallback: {self._fallback_reason}",
+        )
 
     def _cell_rect(self, row: int, col: int) -> QRectF:
         x = col * CELL_PX + WALL_PX / 2

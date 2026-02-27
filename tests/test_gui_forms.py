@@ -167,6 +167,7 @@ def test_puzzle_panel_hidden_when_no_puzzle(qtbot):
 
     dialog = PuzzleDialog()
     qtbot.addWidget(dialog)
+    dialog.show()
     dialog.show_puzzle(None)
 
     assert not dialog.puzzle_area.isVisible()
@@ -227,6 +228,7 @@ def test_completion_screen_shown(qtbot, dummy_complete_view):
 
     panel = FormsPanel()
     qtbot.addWidget(panel)
+    panel.show()
     panel.update_view(dummy_complete_view)
 
     assert panel.completion_overlay.isVisible()

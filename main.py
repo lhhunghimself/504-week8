@@ -9,9 +9,7 @@ from maze import Direction, Position
 
 @dataclass(frozen=True)
 class Command:
-    """
-    Normalized command object consumed by the engine.
-    """
+    """Normalized command object consumed by the engine."""
 
     verb: str
     args: list[str] = field(default_factory=list)
@@ -19,9 +17,7 @@ class Command:
 
 @dataclass
 class GameView:
-    """
-    UI-agnostic state projection returned by the engine.
-    """
+    """UI-agnostic state projection returned by the engine."""
 
     pos: dict[str, int]
     cell_title: str
@@ -30,18 +26,32 @@ class GameView:
     pending_puzzle: dict[str, str] | None
     is_complete: bool
     move_count: int = 0
-    map_text: str | None = None
+    map_text: str = ""
+    visited_count: int = 0
 
 
 @dataclass
 class GameOutput:
-    """
-    Wrapper for state + user-facing messages from engine commands.
-    """
+    """Wrapper for state + user-facing messages from engine commands."""
 
     view: GameView
     messages: list[str] = field(default_factory=list)
     did_persist: bool = False
+    hint_options: list[dict] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Hint type definitions
+# ---------------------------------------------------------------------------
+
+_HINT_TYPES: list[dict] = [
+    {"type": "letter",   "label": "First letter of the answer (-1pt)",       "cost": 1},
+    {"type": "count",    "label": "Character count of the answer (-1pt)",     "cost": 1},
+    {"type": "category", "label": "Question category (-1pt)",                 "cost": 1},
+    {"type": "reveal",   "label": "Progressive character reveal (-2pt)",      "cost": 2},
+]
+
+_HINT_TYPE_MAP = {h["type"]: h for h in _HINT_TYPES}
 
 
 class GameEngine:
@@ -60,6 +70,7 @@ class GameEngine:
         self.player_id = player_id
         self.game_id = game_id
         self._score_recorded = False
+        self._reveal_progress: dict[str, int] = {}  # gate_id -> chars revealed so far
         self._load_state()
 
     def _load_state(self) -> None:
@@ -85,6 +96,12 @@ class GameEngine:
         )
         self._visited.add(self._pos)
 
+        # New keys with backwards-compatible defaults
+        self._hints_used: int = int(game_state.get("hints_used", 0))
+        self._maze_size: int = int(game_state.get("maze_size", 3))
+        self._num_gates: int = int(game_state.get("num_gates", 1))
+        self._maze_seed: int = int(game_state.get("maze_seed", 0))
+
     def _serialize_state(self) -> dict[str, Any]:
         return {
             "pos": {"row": self._pos.row, "col": self._pos.col},
@@ -93,6 +110,10 @@ class GameEngine:
             "started_at": self._started_at,
             "ended_at": _utc_now_iso() if self._is_complete else None,
             "visited": [{"row": p.row, "col": p.col} for p in sorted(self._visited, key=lambda p: (p.row, p.col))],
+            "hints_used": self._hints_used,
+            "maze_size": self._maze_size,
+            "num_gates": self._num_gates,
+            "maze_seed": self._maze_seed,
         }
 
     def _persist(self, status: str = "in_progress") -> None:
@@ -139,6 +160,7 @@ class GameEngine:
                 "elapsed_seconds": _elapsed_seconds(self._started_at),
                 "moves": self._move_count,
                 "puzzles_solved": len(self._solved_gates),
+                "hints_used": self._hints_used,
             }
             self.repo.record_score(
                 player_id=self.player_id,
@@ -152,6 +174,7 @@ class GameEngine:
 
     def _make_view(self) -> GameView:
         cell = self.maze.cell(self._pos)
+        map_text = _render_map(self.maze, self._pos, visited=self._visited, reveal_all=False)
         return GameView(
             pos={"row": self._pos.row, "col": self._pos.col},
             cell_title=cell.title,
@@ -160,10 +183,65 @@ class GameEngine:
             pending_puzzle=self._pending_puzzle_payload(),
             is_complete=self._is_complete,
             move_count=self._move_count,
+            map_text=map_text,
+            visited_count=len(self._visited),
         )
 
     def view(self) -> GameView:
         return self._make_view()
+
+    def _resolve_answer(self) -> str:
+        """Best-effort extraction of the correct answer for hint generation.
+
+        Policy (hybrid):
+        - Missing optional metadata (no ``hint_answer`` attr): fail-soft → return ""
+          which produces generic "?" clues. Hints are non-critical UX; gameplay continues.
+        - Unexpected exception from the registry itself: fail-loud → re-raise so the
+          bug is visible in tests and logs rather than silently swallowed.
+
+        For DB questions, ``correct_answer`` is always available (no fallback needed).
+        For registry puzzles, ``hint_answer`` is an optional contract extension.
+        """
+        if self._pending_db_question is not None:
+            return self._pending_db_question.get("correct_answer", "")
+
+        # Registry path: let registry errors propagate (fail-loud);
+        # only suppress AttributeError for missing hint_answer (fail-soft).
+        puzzle = self.puzzles.get(self._pending_gate_id)
+        hint_answer = getattr(puzzle, "hint_answer", None)
+        if hint_answer:
+            return str(hint_answer)
+        return ""
+
+    def _build_hint_clue(self, hint_type: str) -> str:
+        """Generate a clue string for the current pending puzzle."""
+        answer = self._resolve_answer()
+
+        if hint_type == "letter":
+            first = answer[0] if answer else "?"
+            return f"Clue: the answer starts with '{first}'"
+
+        if hint_type == "count":
+            return f"Clue: the answer is {len(answer)} character(s) long"
+
+        if hint_type == "category":
+            if self._pending_db_question is not None:
+                cat = self._pending_db_question.get("category", "unknown")
+            else:
+                cat = "python"
+            return f"Clue: category is '{cat}'"
+
+        if hint_type == "reveal":
+            key = self._pending_gate_id or "unknown"
+            revealed = self._reveal_progress.get(key, 1)
+            self._reveal_progress[key] = revealed + 1
+            masked = " ".join(
+                c if i < revealed else "_"
+                for i, c in enumerate(answer)
+            ) if answer else "?"
+            return f"Clue: {masked}"
+
+        return "No clue available."
 
     def handle(self, command: Command) -> GameOutput:
         verb = (command.verb or "").strip().lower()
@@ -177,6 +255,59 @@ class GameEngine:
         if verb == "save":
             self._persist(status="completed" if self._is_complete else "in_progress")
             return GameOutput(view=self._make_view(), messages=["Progress saved."], did_persist=True)
+
+        if verb == "status":
+            total_cells = self.maze.width * self.maze.height
+            explored_pct = int(100 * len(self._visited) / total_cells) if total_cells else 0
+            messages = [
+                f"Position: row={self._pos.row}, col={self._pos.col}",
+                f"Moves: {self._move_count}",
+                f"Gates/puzzles solved: {len(self._solved_gates)}",
+                f"Hints used: {self._hints_used}",
+                f"Visited/explored: {len(self._visited)}/{total_cells} cells ({explored_pct}%)",
+            ]
+            return GameOutput(view=self._make_view(), messages=messages, did_persist=False)
+
+        if verb == "hint":
+            if self._pending_gate_id is None:
+                return GameOutput(
+                    view=self._make_view(),
+                    messages=["No puzzle active. Hints are only available when a gate puzzle is pending."],
+                    did_persist=False,
+                    hint_options=None,
+                )
+
+            hint_type = args[0].strip().lower() if args else None
+
+            # Step 1: no type given — return available options for the UI to display
+            if hint_type is None:
+                return GameOutput(
+                    view=self._make_view(),
+                    messages=["Choose a hint type:"],
+                    did_persist=False,
+                    hint_options=list(_HINT_TYPES),
+                )
+
+            # Step 2: type given — deliver clue
+            hint_def = _HINT_TYPE_MAP.get(hint_type)
+            if hint_def is None:
+                valid = ", ".join(_HINT_TYPE_MAP.keys())
+                return GameOutput(
+                    view=self._make_view(),
+                    messages=[f"Unknown hint type '{hint_type}'. Valid types: {valid}"],
+                    did_persist=False,
+                )
+
+            clue = self._build_hint_clue(hint_type)
+            self._hints_used += hint_def["cost"]
+            self._persist()
+            did_persist = True
+            return GameOutput(
+                view=self._make_view(),
+                messages=[clue],
+                did_persist=did_persist,
+                hint_options=None,
+            )
 
         if verb == "answer":
             if self._pending_gate_id is None:
@@ -192,6 +323,7 @@ class GameEngine:
                 self._solved_gates.add(self._pending_gate_id)
                 if self._pending_db_question is not None and hasattr(self.repo, "mark_question_asked"):
                     self.repo.mark_question_asked(self._pending_db_question["id"])
+                self._reveal_progress.pop(self._pending_gate_id, None)
                 self._pending_gate_id = None
                 self._pending_db_question = None
                 self._persist(status="in_progress")
@@ -217,7 +349,6 @@ class GameEngine:
         gate_id = self.maze.gate_id_for(self._pos, direction)
         if gate_id is not None and gate_id not in self._solved_gates:
             self._pending_gate_id = gate_id
-            # Try DB question bank first if repo supports it
             if hasattr(self.repo, "get_random_question"):
                 q = self.repo.get_random_question()
                 if q is not None:
@@ -258,15 +389,18 @@ def _elapsed_seconds(started_at: str | None) -> int:
 
 _HELP_TEXT = """\
 Commands:
-  n / s / e / w   — move in that direction
-  go <dir>        — move (north, south, east, west, or N/S/E/W)
-  look            — re-describe current cell
-  map             — show a simple maze map
-  answer <text>   — answer a pending puzzle
-  save            — save progress
-  scores          — show top scores
-  help            — show this help
-  quit            — exit the game
+  n / s / e / w      — move in that direction
+  go <dir>           — move (north, south, east, west, or N/S/E/W)
+  look               — re-describe current cell
+  map                — show the fog-of-war map
+  answer <text>      — answer a pending puzzle
+  hint               — show available hint types (when puzzle is pending)
+  hint <type>        — get a hint: letter | count | category | reveal
+  status             — show game progress summary
+  save               — save progress
+  scores             — show top scores
+  help               — show this help
+  quit               — exit the game
 """
 
 
@@ -274,7 +408,7 @@ def _render_map(
     maze: Any,
     pos: Position,
     visited: set[Position] | None = None,
-    reveal_all: bool = True,
+    reveal_all: bool = False,
 ) -> str:
     """Render a text map of the maze with the player marked. Fog of war when reveal_all=False."""
     vis = visited if visited is not None else set()
@@ -299,7 +433,6 @@ def _render_map(
                 icon = " . "
             row_cells.append(icon)
 
-        # Horizontal connectors
         connected: list[str] = []
         for c, token in enumerate(row_cells):
             connected.append(token)
@@ -313,7 +446,6 @@ def _render_map(
                     connected.append("  ")
         lines.append("".join(connected))
 
-        # Vertical connectors
         if r < maze.height - 1:
             vert: list[str] = []
             for c in range(maze.width):
@@ -343,7 +475,7 @@ def _render_view(view: GameView, maze: Any, pos: Position, messages: list[str]) 
         parts.append("")
         parts.append(f">> PUZZLE: {view.pending_puzzle['title']}")
         parts.append(view.pending_puzzle["prompt"])
-        parts.append("  Use: answer <your answer>")
+        parts.append("  Use: answer <your answer>  |  hint (for hint options)")
 
     if view.is_complete:
         parts.append("")
@@ -367,7 +499,7 @@ def cli_main() -> None:
     """Interactive CLI entry point for the quiz maze game."""
     from pathlib import Path
 
-    from db import open_repo
+    from db import HACKER_SEED_QUESTIONS, open_repo
     from maze import build_minimal_3x3_maze
     from puzzles import PuzzleRegistry
 
@@ -376,16 +508,10 @@ def cli_main() -> None:
     print("=" * 50)
     print()
 
-    # --- Setup ---
     save_path = Path("game_save.db")
     repo = open_repo(save_path)
-    if hasattr(repo, "seed_questions"):
-        # Ensure question bank has content (idempotent merge)
-        repo.seed_questions([
-            {"id": "q-len", "question_text": "What built-in returns the number of items in a list?", "correct_answer": "len", "category": "python"},
-            {"id": "q-def", "question_text": "What keyword creates a function in Python?", "correct_answer": "def", "category": "python"},
-            {"id": "q-break", "question_text": "What keyword exits a loop immediately?", "correct_answer": "break", "category": "python"},
-        ])
+    repo.seed_questions(HACKER_SEED_QUESTIONS)
+
     maze = build_minimal_3x3_maze()
     puzzles = PuzzleRegistry()
 
@@ -399,6 +525,10 @@ def cli_main() -> None:
         "solved_gates": [],
         "started_at": _utc_now_iso(),
         "visited": [{"row": maze.start.row, "col": maze.start.col}],
+        "hints_used": 0,
+        "maze_size": maze.width,
+        "num_gates": 1,
+        "maze_seed": 0,
     }
     game = repo.create_game(
         player_id=player_id,
@@ -416,14 +546,14 @@ def cli_main() -> None:
         game_id=game_id,
     )
 
-    # --- Initial view ---
     view = engine.view()
     print(_render_view(view, maze, engine._pos, []))
+    print()
+    print(_render_map(maze, engine._pos, visited=engine._visited, reveal_all=False))
     print()
     print("Type 'help' for commands.")
     print()
 
-    # --- Game loop ---
     while True:
         try:
             raw = input("> ").strip()
@@ -455,7 +585,8 @@ def cli_main() -> None:
                 print("  -- Top Scores --")
                 for i, s in enumerate(scores, 1):
                     m = s.get("metrics", {}) if isinstance(s, dict) else s.metrics
-                    print(f"  {i}. {m.get('moves', '?')} moves, {m.get('elapsed_seconds', '?')}s")
+                    hints = m.get("hints_used", 0)
+                    print(f"  {i}. {m.get('moves', '?')} moves, {m.get('elapsed_seconds', '?')}s, hints: {hints}")
             print()
             continue
 
@@ -466,6 +597,33 @@ def cli_main() -> None:
             continue
 
         out = engine.handle(cmd)
+
+        # Handle hint step-1: engine returned hint_options — show menu and get type
+        if out.hint_options is not None:
+            print()
+            for i, opt in enumerate(out.hint_options, 1):
+                print(f"  {i}. {opt['label']}")
+            print()
+            try:
+                choice = input("  Choose hint type (number or name, Enter to cancel): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                choice = ""
+            if choice:
+                # Accept number or type name
+                if choice.isdigit():
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(out.hint_options):
+                        chosen_type = out.hint_options[idx]["type"]
+                    else:
+                        print("  Invalid choice.")
+                        continue
+                else:
+                    chosen_type = choice.lower()
+                out = engine.handle(Command(verb="hint", args=[chosen_type]))
+            else:
+                print("  Hint cancelled.")
+                continue
+
         print(_render_view(out.view, maze, engine._pos, out.messages))
         print()
 
@@ -476,4 +634,3 @@ def cli_main() -> None:
 
 if __name__ == "__main__":
     cli_main()
-

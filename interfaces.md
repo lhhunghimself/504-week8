@@ -194,7 +194,7 @@ Persisted keys:
 - `started_at: str`
 - `ended_at: str | None`
 - `visited: list[{"row": int, "col": int}]` — cells the player has been to; used for fog-of-war rendering
-- `hints_used: int` — number of hints consumed (affects scoring)
+- `hints_used: int` — total hint cost consumed (each hint type has a cost; affects scoring)
 - `maze_size: int` — side length of the generated maze (needed to reconstruct on load)
 - `num_gates: int` — number of gates placed (needed to reconstruct on load)
 - `maze_seed: int` — seed used to generate the maze (needed to reconstruct on load)
@@ -205,6 +205,11 @@ Backwards-compatible load defaults (if a key is missing on load):
 - `maze_size`: `3`
 - `num_gates`: `1`
 - `maze_seed`: `0`
+
+Note on `hints_used` and scoring: `hints_used` is the sum of `cost` values from each hint
+used. It is recorded in score metrics so the leaderboard can apply a penalty or secondary
+sort. The engine records the raw total; the scoring formula is determined by the leaderboard
+layer.
 
 ### 5.2 Puzzle Contract (no UI assumptions)
 
@@ -251,17 +256,24 @@ The engine should not print or read input directly. It should accept intents/com
     - Note: `pending_puzzle["puzzle_id"]` is an opaque identifier. When sourced from the DB question bank it is a question `id`; when sourced from `PuzzleRegistry` it is the puzzle/gate id.
   - `is_complete: bool`
   - `move_count: int`
-  - `map_text: str` — pre-rendered fog-of-war ASCII map (always populated by the engine)
+  - `map_text: str` — pre-rendered fog-of-war ASCII map (always populated, never None)
   - `visited_count: int` — number of distinct cells the player has entered
 
 - `GameOutput`
   - `view: GameView`
   - `messages: list[str]` (UI can display however it wants)
   - `did_persist: bool`
+  - `hint_options: list[dict] | None` — populated only when `verb="hint"` with no args and
+    a puzzle is pending; `None` in all other cases.
+    Each dict: `{"type": str, "label": str, "cost": int}`
+    - `type`: one of `"letter"`, `"count"`, `"category"`, `"reveal"`
+    - `label`: human-readable description for display (e.g. `"First letter (-1pt)"`)
+    - `cost`: increment to `hints_used` if this type is chosen
 
 ### 5.4 CLI rendering (fog of war)
 
 - `_render_map(maze, pos, visited: set[Position], reveal_all: bool = False) -> str`
+  - Default is `reveal_all=False` (fog of war). Pass `reveal_all=True` for debug only.
   - Renders ASCII map with player at `pos`
   - Default (`reveal_all=False`): unvisited cells show as `###`; exit hidden until discovered
   - `reveal_all=True`: full map visible (debug/testing only)
@@ -274,7 +286,16 @@ Verbs (CLI now; PyQt will trigger equivalent commands):
 - `look` (re-describe current cell)
 - `map` (show the fog-of-war map)
 - `answer <text>` (submit answer to pending puzzle)
-- `hint` (reveal a clue for the pending puzzle; increments `hints_used`, incurs score penalty)
+- `hint` — two-step flow:
+  - Step 1 — bare `hint` (no args): engine returns `hint_options` in `GameOutput`;
+    `hints_used` is NOT incremented yet. CLI renders a numbered menu; PyQt renders buttons.
+  - Step 2 — `hint <type>`: engine delivers the clue, increments `hints_used` by the
+    type's cost, and persists. Types and costs:
+    - `letter`   — first letter of correct answer (cost: 1)
+    - `count`    — character count of correct answer (cost: 1)
+    - `category` — question category (cost: 1)
+    - `reveal`   — progressive character reveal, one more char per use (cost: 2)
+  - If no puzzle is pending: returns an info message, no state change, `hint_options=None`.
 - `status` (show game progress: position, moves, gates solved, hints used, exploration %)
 - `save` (persist explicitly; engine may also autosave)
 - `scores` (show leaderboard / top scores)

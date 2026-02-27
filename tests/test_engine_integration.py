@@ -277,14 +277,20 @@ def _make_engine(maze_module, repo, puzzle_registry, *, maze=None):
 
 
 def _trigger_pending_puzzle(engine, cmd_cls, maze):
-    """Move toward a gated direction to get a pending puzzle. Returns the output."""
-    path = _bfs_path_to_exit(maze)
-    for d in path:
-        out = engine.handle(cmd_cls(verb="go", args=[_dir_token(d)]))
-        view = out.view if hasattr(out, "view") else out["view"]
-        pending = view.pending_puzzle if hasattr(view, "pending_puzzle") else view["pending_puzzle"]
-        if pending is not None:
-            return out
+    """
+    Trigger a pending puzzle by finding any gated direction from the current position.
+    Tries all available moves from the start position rather than only BFS-path moves,
+    since the gate may be on a non-shortest-path edge.
+    """
+    start_pos = maze.start
+    for d in maze.available_moves(start_pos):
+        gate_id = maze.gate_id_for(start_pos, d)
+        if gate_id is not None:
+            out = engine.handle(cmd_cls(verb="go", args=[_dir_token(d)]))
+            view = out.view if hasattr(out, "view") else out["view"]
+            pending = view.pending_puzzle if hasattr(view, "pending_puzzle") else view["pending_puzzle"]
+            if pending is not None:
+                return out
     return None
 
 
@@ -298,10 +304,17 @@ def test_hint_command_provides_clue_and_increments_count(maze_module, repo, puzz
     gate_out = _trigger_pending_puzzle(engine, cmd_cls, maze)
     assert gate_out is not None, "Minimal maze must have at least one gate to test hint"
 
-    out = engine.handle(cmd_cls(verb="hint", args=[]))
+    # Step 1: bare hint — should return hint_options, no increment yet
+    step1 = engine.handle(cmd_cls(verb="hint", args=[]))
+    hint_options = step1.hint_options if hasattr(step1, "hint_options") else step1.get("hint_options")
+    assert hint_options is not None and len(hint_options) > 0, \
+        "bare hint with pending puzzle must return hint_options"
+
+    # Step 2: pick a hint type — should deliver clue and increment hints_used
+    out = engine.handle(cmd_cls(verb="hint", args=["letter"]))
     messages = out.messages if hasattr(out, "messages") else out["messages"]
-    assert messages, "hint command must return at least one message"
-    assert any(len(m) > 0 for m in messages), "hint message must be non-empty"
+    assert messages, "hint <type> command must return at least one message"
+    assert any(len(m) > 0 for m in messages), "hint clue message must be non-empty"
 
     saved = repo.get_game(game_id)
     state = saved["state"] if isinstance(saved, dict) else saved.state
@@ -418,7 +431,7 @@ def test_hints_included_in_score_metrics(maze_module, repo, puzzle_registry):
         pending = view.pending_puzzle if hasattr(view, "pending_puzzle") else view["pending_puzzle"]
 
         while pending is not None:
-            engine.handle(cmd_cls(verb="hint", args=[]))
+            engine.handle(cmd_cls(verb="hint", args=["letter"]))
             hints_used += 1
             engine.handle(cmd_cls(verb="answer", args=["solve"]))
             out = engine.handle(cmd_cls(verb="go", args=[_dir_token(d)]))
@@ -502,7 +515,7 @@ def test_backwards_compatible_state_load(maze_module, repo, puzzle_registry):
     state = saved["state"] if isinstance(saved, dict) else saved.state
 
     assert state.get("hints_used") == 0
-    assert state.get("maze_size") == maze.width
+    assert state.get("maze_size") == 3, "Legacy state must default maze_size to 3 per interfaces.md"
     assert state.get("num_gates") == 1
     assert state.get("maze_seed") == 0
     assert isinstance(state.get("visited"), list) and state["visited"]
@@ -609,4 +622,354 @@ def test_completed_score_contains_elapsed_seconds_and_moves(maze_module, repo, p
     assert "moves" in m, "Score metrics must include moves"
     assert isinstance(m["moves"], int) and m["moves"] >= 1
     assert "hints_used" in m, "Score metrics must include hints_used"
+
+
+# ---------------------------------------------------------------------------
+# C.17  hint_options dict shape validation
+# ---------------------------------------------------------------------------
+
+def test_hint_options_contain_required_keys(maze_module, repo, puzzle_registry):
+    engine, cmd_cls, maze, player_id, game_id = _make_engine(maze_module, repo, puzzle_registry)
+
+    gate_out = _trigger_pending_puzzle(engine, cmd_cls, maze)
+    assert gate_out is not None, "Minimal maze must have at least one gate"
+
+    out = engine.handle(cmd_cls(verb="hint", args=[]))
+    hint_options = out.hint_options if hasattr(out, "hint_options") else out.get("hint_options")
+    assert hint_options is not None, "bare hint with pending puzzle must return hint_options"
+    assert len(hint_options) >= 1, "must offer at least one hint type"
+
+    for opt in hint_options:
+        assert "type" in opt, f"hint option missing 'type': {opt}"
+        assert "label" in opt, f"hint option missing 'label': {opt}"
+        assert "cost" in opt, f"hint option missing 'cost': {opt}"
+        assert isinstance(opt["type"], str) and len(opt["type"]) > 0
+        assert isinstance(opt["label"], str) and len(opt["label"]) > 0
+        assert isinstance(opt["cost"], int) and opt["cost"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# C.18  hint with invalid type returns error, no state change
+# ---------------------------------------------------------------------------
+
+def test_hint_invalid_type_returns_error_no_state_change(maze_module, repo, puzzle_registry):
+    engine, cmd_cls, maze, player_id, game_id = _make_engine(maze_module, repo, puzzle_registry)
+
+    gate_out = _trigger_pending_puzzle(engine, cmd_cls, maze)
+    assert gate_out is not None, "Minimal maze must have at least one gate"
+
+    saved_before = repo.get_game(game_id)
+    state_before = saved_before["state"] if isinstance(saved_before, dict) else saved_before.state
+    hints_before = state_before.get("hints_used", 0)
+
+    out = engine.handle(cmd_cls(verb="hint", args=["nonexistent_type"]))
+    messages = out.messages if hasattr(out, "messages") else out["messages"]
+    assert messages, "invalid hint type should return an error message"
+
+    saved_after = repo.get_game(game_id)
+    state_after = saved_after["state"] if isinstance(saved_after, dict) else saved_after.state
+    assert state_after.get("hints_used", 0) == hints_before, \
+        "invalid hint type must not increment hints_used"
+
+
+# ---------------------------------------------------------------------------
+# C.19  hint without pending puzzle does not change hints_used
+# ---------------------------------------------------------------------------
+
+def test_hint_no_puzzle_does_not_change_hints_used(maze_module, repo, puzzle_registry):
+    engine, cmd_cls, maze, player_id, game_id = _make_engine(maze_module, repo, puzzle_registry)
+
+    engine.handle(cmd_cls(verb="save", args=[]))
+    saved_before = repo.get_game(game_id)
+    state_before = saved_before["state"] if isinstance(saved_before, dict) else saved_before.state
+    hints_before = state_before.get("hints_used", 0)
+
+    engine.handle(cmd_cls(verb="hint", args=[]))
+    engine.handle(cmd_cls(verb="hint", args=["letter"]))
+
+    engine.handle(cmd_cls(verb="save", args=[]))
+    saved_after = repo.get_game(game_id)
+    state_after = saved_after["state"] if isinstance(saved_after, dict) else saved_after.state
+    assert state_after.get("hints_used", 0) == hints_before, \
+        "hint without pending puzzle must not change hints_used"
+
+
+# ---------------------------------------------------------------------------
+# C.20  different hint types apply different costs
+# ---------------------------------------------------------------------------
+
+def test_hint_types_apply_correct_costs(maze_module, repo, puzzle_registry):
+    engine, cmd_cls, maze, player_id, game_id = _make_engine(maze_module, repo, puzzle_registry)
+
+    gate_out = _trigger_pending_puzzle(engine, cmd_cls, maze)
+    assert gate_out is not None, "Minimal maze must have at least one gate"
+
+    # Use hint letter (cost 1)
+    engine.handle(cmd_cls(verb="hint", args=["letter"]))
+    saved = repo.get_game(game_id)
+    state = saved["state"] if isinstance(saved, dict) else saved.state
+    assert state.get("hints_used", 0) == 1, "hint letter should cost 1"
+
+    # Use hint reveal (cost 2) — total should become 3
+    engine.handle(cmd_cls(verb="hint", args=["reveal"]))
+    saved = repo.get_game(game_id)
+    state = saved["state"] if isinstance(saved, dict) else saved.state
+    assert state.get("hints_used", 0) == 3, "hint reveal should cost 2 (total 1+2=3)"
+
+    # Use hint count (cost 1) — total should become 4
+    engine.handle(cmd_cls(verb="hint", args=["count"]))
+    saved = repo.get_game(game_id)
+    state = saved["state"] if isinstance(saved, dict) else saved.state
+    assert state.get("hints_used", 0) == 4, "hint count should cost 1 (total 3+1=4)"
+
+
+# ---------------------------------------------------------------------------
+# C.21  legacy state without maze_size defaults to 3 (not maze.width)
+# ---------------------------------------------------------------------------
+
+def test_legacy_maze_size_defaults_to_contract_value(maze_module, repo, puzzle_registry):
+    """Create a legacy state with no maze_size key and verify the engine
+    defaults to 3 per §5.1 of interfaces.md, regardless of the actual maze
+    dimensions.
+    """
+    main = _import_required("main")
+    engine_cls = getattr(main, "GameEngine")
+    cmd_cls = getattr(main, "Command")
+
+    maze = maze_module.build_square_maze(size=5, seed=42, num_gates=1)
+    player = repo.get_or_create_player("neo")
+    player_id = player["id"] if isinstance(player, dict) else player.id
+
+    legacy_state = {
+        "pos": {"row": maze.start.row, "col": maze.start.col},
+        "move_count": 0,
+        "solved_gates": [],
+        "started_at": "2026-02-13T00:00:00Z",
+    }
+    game = repo.create_game(
+        player_id=player_id,
+        maze_id=maze.maze_id,
+        maze_version=maze.maze_version,
+        initial_state=legacy_state,
+    )
+    game_id = game["id"] if isinstance(game, dict) else game.id
+
+    engine = engine_cls(
+        maze=maze, repo=repo, puzzles=puzzle_registry,
+        player_id=player_id, game_id=game_id,
+    )
+
+    engine.handle(cmd_cls(verb="save", args=[]))
+    saved = repo.get_game(game_id)
+    state = saved["state"] if isinstance(saved, dict) else saved.state
+
+    assert state["maze_size"] == 3, (
+        f"Legacy state must default maze_size to 3 per contract, got {state['maze_size']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# C.22  hint works with contract-only puzzle (no private attrs)
+# ---------------------------------------------------------------------------
+
+def test_hint_with_contract_only_puzzle(maze_module, repo):
+    """Use a puzzle registry that returns an object with ONLY the contract
+    interface (id, title, prompt, check) — no _accept, no hint_answer.
+    The engine must still produce a hint (even if generic) and not crash.
+    """
+    from dataclasses import dataclass
+    from typing import Any
+
+    @dataclass(frozen=True)
+    class MinimalPuzzle:
+        id: str
+        title: str
+        prompt: str
+
+        def check(self, answer: str, state: dict[str, Any]) -> bool:
+            return answer.strip().lower() == "42"
+
+    class MinimalRegistry:
+        def get(self, puzzle_id: str):
+            return MinimalPuzzle(
+                id=puzzle_id,
+                title=f"Minimal({puzzle_id})",
+                prompt="What is the answer? (42)",
+            )
+
+    main = _import_required("main")
+    engine_cls = getattr(main, "GameEngine")
+    cmd_cls = getattr(main, "Command")
+
+    maze = maze_module.build_minimal_3x3_maze()
+    player = repo.get_or_create_player("neo")
+    player_id = player["id"] if isinstance(player, dict) else player.id
+
+    initial_state = {
+        "pos": {"row": maze.start.row, "col": maze.start.col},
+        "move_count": 0,
+        "solved_gates": [],
+        "started_at": "2026-02-13T00:00:00Z",
+        "visited": [{"row": maze.start.row, "col": maze.start.col}],
+        "hints_used": 0,
+    }
+    game = repo.create_game(
+        player_id=player_id,
+        maze_id=maze.maze_id,
+        maze_version=maze.maze_version,
+        initial_state=initial_state,
+    )
+    game_id = game["id"] if isinstance(game, dict) else game.id
+
+    engine = engine_cls(
+        maze=maze, repo=repo, puzzles=MinimalRegistry(),
+        player_id=player_id, game_id=game_id,
+    )
+
+    gate_out = _trigger_pending_puzzle(engine, cmd_cls, maze)
+    assert gate_out is not None, "Minimal maze must have at least one gate"
+
+    for hint_type in ("letter", "count", "category", "reveal"):
+        out = engine.handle(cmd_cls(verb="hint", args=[hint_type]))
+        messages = out.messages if hasattr(out, "messages") else out["messages"]
+        assert messages, f"hint {hint_type} must return at least one message"
+        assert any(len(m) > 0 for m in messages), f"hint {hint_type} must produce non-empty clue"
+
+
+# ---------------------------------------------------------------------------
+# C.23  bare hint does not persist, hint <type> does persist
+# ---------------------------------------------------------------------------
+
+def test_hint_persist_semantics(maze_module, repo, puzzle_registry):
+    """bare hint → did_persist=False; hint <type> → did_persist=True."""
+    engine, cmd_cls, maze, player_id, game_id = _make_engine(maze_module, repo, puzzle_registry)
+
+    gate_out = _trigger_pending_puzzle(engine, cmd_cls, maze)
+    assert gate_out is not None, "Minimal maze must have at least one gate"
+
+    out_bare = engine.handle(cmd_cls(verb="hint", args=[]))
+    assert out_bare.did_persist is False, "bare hint must not persist"
+
+    out_typed = engine.handle(cmd_cls(verb="hint", args=["letter"]))
+    assert out_typed.did_persist is True, "hint <type> must persist (it changes hints_used)"
+
+
+# ---------------------------------------------------------------------------
+# C.24  progressive reveal increases chars and resets after solve
+#       Uses a deterministic 2-gate 5x5 maze so reset is always exercised.
+# ---------------------------------------------------------------------------
+
+def _reveal_depth_from_clue(clue: str) -> int:
+    """Parse reveal clue depth from a message like: 'Clue: s o _ _ _'."""
+    payload = clue.split(":", 1)[1].strip() if ":" in clue else clue.strip()
+    tokens = payload.split()
+    if not tokens:
+        return 0
+    return sum(1 for t in tokens if t != "_")
+
+
+def test_progressive_reveal_and_reset(maze_module, repo, puzzle_registry):
+    """Repeated 'hint reveal' should progress, then reset for the next gate.
+
+    Uses a deterministic 2-gate 5x5 maze (seed=42) and walks the BFS path
+    from start to exit. Gate encounters are discovered from actual traversal,
+    so this test does not rely on hardcoded gate IDs.
+    """
+    main = _import_required("main")
+    engine_cls = getattr(main, "GameEngine")
+    cmd_cls = getattr(main, "Command")
+
+    maze = maze_module.build_square_maze(size=5, seed=42, num_gates=2)
+    player = repo.get_or_create_player("neo")
+    player_id = player["id"] if isinstance(player, dict) else player.id
+
+    initial_state = {
+        "pos": {"row": maze.start.row, "col": maze.start.col},
+        "move_count": 0,
+        "solved_gates": [],
+        "started_at": "2026-02-13T00:00:00Z",
+        "visited": [{"row": maze.start.row, "col": maze.start.col}],
+        "hints_used": 0,
+        "maze_size": 5,
+        "num_gates": 2,
+        "maze_seed": 42,
+    }
+    game = repo.create_game(
+        player_id=player_id,
+        maze_id=maze.maze_id,
+        maze_version=maze.maze_version,
+        initial_state=initial_state,
+    )
+    game_id = game["id"] if isinstance(game, dict) else game.id
+
+    engine = engine_cls(
+        maze=maze, repo=repo, puzzles=puzzle_registry,
+        player_id=player_id, game_id=game_id,
+    )
+
+    path = _bfs_path_to_exit(maze)
+    gate_hits = 0
+    gate1_level1 = None
+    gate1_level2 = None
+    gate2_level1 = None
+
+    for d in path:
+        out = engine.handle(cmd_cls(verb="go", args=[_dir_token(d)]))
+        view = out.view if hasattr(out, "view") else out["view"]
+        pending = view.pending_puzzle if hasattr(view, "pending_puzzle") else view["pending_puzzle"]
+        if pending is None:
+            continue
+
+        gate_hits += 1
+
+        # First reveal on this gate.
+        out_r1 = engine.handle(cmd_cls(verb="hint", args=["reveal"]))
+        msgs_r1 = out_r1.messages if hasattr(out_r1, "messages") else out_r1["messages"]
+        assert msgs_r1, "hint reveal must return at least one message"
+        level1 = _reveal_depth_from_clue(msgs_r1[0])
+        assert level1 >= 1, f"first reveal depth must be >=1, got {level1}"
+
+        if gate_hits == 1:
+            # Same gate, second reveal should advance depth.
+            out_r2 = engine.handle(cmd_cls(verb="hint", args=["reveal"]))
+            msgs_r2 = out_r2.messages if hasattr(out_r2, "messages") else out_r2["messages"]
+            assert msgs_r2, "second hint reveal must return a message"
+            level2 = _reveal_depth_from_clue(msgs_r2[0])
+            assert level2 > level1, (
+                f"second reveal must increase depth on same gate: level1={level1}, level2={level2}"
+            )
+            gate1_level1 = level1
+            gate1_level2 = level2
+
+        elif gate_hits == 2:
+            # New gate should reset back to first-reveal depth.
+            gate2_level1 = level1
+            assert gate1_level1 is not None and gate1_level2 is not None
+            assert gate2_level1 == gate1_level1, (
+                "first reveal depth on second gate should reset to first-reveal depth"
+            )
+            assert gate2_level1 < gate1_level2, (
+                "first reveal on second gate should not carry over deeper reveal level from first gate"
+            )
+
+        # Solve pending puzzle and retry same move to cross the gated edge.
+        out_ans = engine.handle(cmd_cls(verb="answer", args=["solve"]))
+        view_ans = out_ans.view if hasattr(out_ans, "view") else out_ans["view"]
+        pending_ans = view_ans.pending_puzzle if hasattr(view_ans, "pending_puzzle") else view_ans["pending_puzzle"]
+        assert pending_ans is None, "pending puzzle should clear after correct answer"
+
+        out_retry = engine.handle(cmd_cls(verb="go", args=[_dir_token(d)]))
+        view_retry = out_retry.view if hasattr(out_retry, "view") else out_retry["view"]
+        pending_retry = (
+            view_retry.pending_puzzle
+            if hasattr(view_retry, "pending_puzzle")
+            else view_retry["pending_puzzle"]
+        )
+        assert pending_retry is None, "after solving, retried move should pass gate"
+
+        if gate_hits >= 2:
+            break
+
+    assert gate_hits >= 2, "expected to encounter at least two gates on deterministic 2-gate maze"
+    assert gate2_level1 is not None, "second gate must be exercised for reset validation"
 

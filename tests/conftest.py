@@ -69,6 +69,10 @@ class _TestPuzzle:
     def hint_answer(self) -> str:
         return self.correct
 
+    @property
+    def hint_answer(self) -> str:
+        return self.correct
+
     def check(self, answer: str, state: dict[str, Any]) -> bool:
         return answer.strip() == self.correct
 

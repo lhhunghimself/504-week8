@@ -311,3 +311,122 @@ Verbs (CLI now; PyQt will trigger equivalent commands):
 - DB compatibility:
   - `schema_version: int` (repository-internal; recommended storage: SQLite `PRAGMA user_version`)
 - Rule: if `schema_version` changes, provide a migration path (later). For now, keep it at `1` and preserve backward compatibility within the prototype.
+
+---
+
+## 7) PyQt GUI Contract
+
+This section defines the contracts for the PyQt6 graphical user interface, structured for three parallel development teams.
+
+### 7.1 Module Layout
+
+| File | Owner | Purpose |
+|---|---|---|
+| `gui_main.py` | Team 3 (Controller) | Entry point: builds QApplication, wires components |
+| `gui/forms_panel.py` | Team 1 (UI/UX) | Room info, movement buttons, answer input, hint buttons |
+| `gui/puzzle_dialog.py` | Team 1 (UI/UX) | Modal/inline puzzle display with answer + hints |
+| `gui/status_bar.py` | Team 1 (UI/UX) | Position, moves, gates, hints, exploration % |
+| `gui/score_board.py` | Team 1 (UI/UX) | Top scores table |
+| `gui/maze_canvas.py` | Team 2 (Canvas) | Graphical maze rendering (toolkit TBD; must be QWidget-embeddable) |
+| `gui/controller.py` | Team 3 (Controller) | GameController QObject — wires engine to widgets |
+| `gui/engine_worker.py` | Team 3 (Controller) | QThread wrapper around GameEngine |
+
+Dependency rule: `gui/` modules may import `main.py` types (`Command`, `GameView`, `GameOutput`, `CellView`, `MazeSnapshot`) and `maze.py` types (`Maze`, `Position`, `Direction`, `CellSpec`, `CellKind`). They must **not** import `db.py` directly.
+
+### 7.2 Data Contracts for Maze Canvas
+
+The canvas needs structured per-cell data, not just `map_text`. These dataclasses live in `main.py`:
+
+- `CellView` (dataclass)
+  - `row: int`
+  - `col: int`
+  - `kind: str` — one of `"start"`, `"exit"`, `"normal"`
+  - `visible: bool` — `False` when hidden by fog of war
+  - `is_player: bool` — `True` for the cell the player occupies
+  - `has_gate: bool` — `True` when an unsolved gate is present at this cell
+  - `solved: bool` — `True` when the gate at this cell has been solved
+  - `connections: list[str]` — open movement directions from this cell (e.g. `["N", "E"]`)
+
+- `MazeSnapshot` (dataclass)
+  - `width: int`
+  - `height: int`
+  - `cells: list[CellView]` — row-major order, exactly `width * height` items
+
+`GameView` gains an optional field:
+  - `maze_snapshot: MazeSnapshot | None = None`
+
+Backwards compatibility: defaults to `None`; CLI is unaffected. The engine populates it in `_make_view()`. For small mazes (up to ~9x9) the cost is negligible.
+
+### 7.3 Qt Signal/Slot Contract
+
+These are the mandatory signals and slots each widget must expose for the Controller to wire.
+
+**Team 1 — FormsPanel (QWidget)**
+
+| Direction | Name | Signature | Description |
+|---|---|---|---|
+| Signal (out) | `command_issued` | `Command` | Any user action translated to a Command |
+| Slot (in) | `update_view` | `GameView` | Refresh room info, movement buttons, etc. |
+| Slot (in) | `show_messages` | `list[str]` | Display engine feedback messages |
+
+**Team 1 — PuzzleDialog (QWidget)**
+
+| Direction | Name | Signature | Description |
+|---|---|---|---|
+| Signal (out) | `answer_submitted` | `str` | User's answer text |
+| Signal (out) | `hint_requested` | `str` | Hint type chosen (or empty for options) |
+| Slot (in) | `show_puzzle` | `dict` | `pending_puzzle` dict or `None` to hide |
+| Slot (in) | `show_hint_options` | `list[dict]` | `hint_options` list from `GameOutput` |
+| Slot (in) | `show_hint_result` | `str` | Clue text from engine's hint response |
+
+**Team 1 — StatusBar (QWidget)**
+
+| Direction | Name | Signature | Description |
+|---|---|---|---|
+| Slot (in) | `update_status` | `GameView` | Refresh position, moves, gates, visited |
+
+**Team 1 — ScoreBoard (QWidget)**
+
+| Direction | Name | Signature | Description |
+|---|---|---|---|
+| Slot (in) | `show_scores` | `list[dict]` | List of score records from `top_scores()` |
+
+**Team 2 — MazeCanvas (QWidget)**
+
+| Direction | Name | Signature | Description |
+|---|---|---|---|
+| Signal (out) | `direction_clicked` | `str` | `"N"`, `"S"`, `"E"`, `"W"` from click on adjacent cell |
+| Slot (in) | `update_maze` | `MazeSnapshot` | Redraw changed cells (diff internally) |
+| Slot (in) | `highlight_player` | `tuple[int,int]` | `(row, col)` to animate player position |
+
+**Team 3 — GameController (QObject)**
+
+| Direction | Name | Signature | Description |
+|---|---|---|---|
+| Signal (out) | `view_changed` | `GameView` | Broadcast after every engine response |
+| Signal (out) | `messages_ready` | `list[str]` | Engine messages for display |
+| Signal (out) | `game_completed` | `dict` | Score metrics when game ends |
+| Slot (in) | `on_command` | `Command` | Receives commands from any widget |
+
+**Team 3 — EngineWorker (QThread)**
+
+| Direction | Name | Signature | Description |
+|---|---|---|---|
+| Signal (out) | `result_ready` | `GameOutput` | Emitted when `engine.handle()` returns |
+| Signal (out) | `error_occurred` | `str` | Emitted on unexpected engine error |
+| Slot (in) | `submit_command` | `Command` | Queued from main thread |
+
+### 7.4 Startup / Wiring Sequence
+
+1. `gui_main.py` parses CLI flags (`--size`, `--seed`, `--gates`, `--reset-game`)
+2. Creates `repo`, `maze`, `puzzles`, `engine` (same as `cli_main`)
+3. Creates `EngineWorker(engine)` in a `QThread`
+4. Creates `GameController` and connects it to the worker
+5. Creates Team 1 widgets and Team 2 canvas
+6. Controller calls `engine.view()` to get initial state, emits `view_changed`
+7. All widgets render initial state from the signal
+
+### 7.5 Entry Points
+
+- `python gui_main.py [--size N] [--seed N] [--gates N] [--reset-game]` — standalone GUI
+- `python main.py --gui [...]` — launches GUI instead of CLI (delegates to `gui_main`)

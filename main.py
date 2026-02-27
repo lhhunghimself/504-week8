@@ -16,6 +16,29 @@ class Command:
 
 
 @dataclass
+class CellView:
+    """Per-cell data for graphical maze rendering."""
+
+    row: int
+    col: int
+    kind: str  # "start" | "exit" | "normal"
+    visible: bool
+    is_player: bool
+    has_gate: bool
+    solved: bool
+    connections: list[str] = field(default_factory=list)
+
+
+@dataclass
+class MazeSnapshot:
+    """Structured maze state consumed by graphical renderers."""
+
+    width: int
+    height: int
+    cells: list[CellView] = field(default_factory=list)
+
+
+@dataclass
 class GameView:
     """UI-agnostic state projection returned by the engine."""
 
@@ -28,6 +51,7 @@ class GameView:
     move_count: int = 0
     map_text: str = ""
     visited_count: int = 0
+    maze_snapshot: MazeSnapshot | None = None
 
 
 @dataclass
@@ -172,6 +196,31 @@ class GameEngine:
             self._score_recorded = True
         return True
 
+    def _build_maze_snapshot(self) -> MazeSnapshot:
+        cells: list[CellView] = []
+        for r in range(self.maze.height):
+            for c in range(self.maze.width):
+                p = Position(row=r, col=c)
+                cell = self.maze.cell(p)
+                visible = p in self._visited
+                gate_id = cell.puzzle_id
+                has_gate = gate_id is not None and gate_id not in self._solved_gates
+                solved = gate_id is not None and gate_id in self._solved_gates
+                connections = sorted(
+                    d.name for d in self.maze.available_moves(p)
+                ) if visible else []
+                cells.append(CellView(
+                    row=r,
+                    col=c,
+                    kind=cell.kind.value,
+                    visible=visible,
+                    is_player=(p == self._pos),
+                    has_gate=has_gate,
+                    solved=solved,
+                    connections=connections,
+                ))
+        return MazeSnapshot(width=self.maze.width, height=self.maze.height, cells=cells)
+
     def _make_view(self) -> GameView:
         cell = self.maze.cell(self._pos)
         map_text = _render_map(self.maze, self._pos, visited=self._visited, reveal_all=False)
@@ -185,6 +234,7 @@ class GameEngine:
             move_count=self._move_count,
             map_text=map_text,
             visited_count=len(self._visited),
+            maze_snapshot=self._build_maze_snapshot(),
         )
 
     def view(self) -> GameView:
@@ -503,6 +553,7 @@ class StartupConfig:
     maze_size: int = 3
     maze_seed: int = 0
     num_gates: int = 1
+    gui: bool = False
 
 
 def _parse_startup_flags(argv: list[str]) -> StartupConfig:
@@ -513,6 +564,8 @@ def _parse_startup_flags(argv: list[str]) -> StartupConfig:
         arg = argv[i]
         if arg == "--reset-game":
             config.reset_game = True
+        elif arg == "--gui":
+            config.gui = True
         elif arg == "--size":
             i += 1
             if i >= len(argv):
@@ -579,8 +632,18 @@ def cli_main(argv: list[str] | None = None) -> None:
         config = _parse_startup_flags(argv)
     except ValueError as e:
         print(e)
-        print("Usage: python main.py [--size N] [--seed N] [--gates N] [--reset-game]")
+        print("Usage: python main.py [--gui] [--size N] [--seed N] [--gates N] [--reset-game]")
         return
+
+    if config.gui:
+        try:
+            from gui_main import gui_main as _gui_main
+        except ImportError:
+            print("GUI not available. Install PyQt6 and ensure gui_main.py exists.")
+            print("Falling back to CLI mode.")
+        else:
+            _gui_main(config)
+            return
 
     print("=" * 50)
     print("  HACK THE MAZE  —  A Python Puzzle Adventure")

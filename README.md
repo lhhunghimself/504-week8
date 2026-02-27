@@ -47,6 +47,17 @@ Flags can be combined freely:
 python main.py --size 5 --gates 2 --reset-game
 ```
 
+### Graphical UI (PyQt6)
+
+Launch the PyQt6 GUI instead of the terminal interface:
+
+```bash
+python main.py --gui
+python main.py --gui --size 5 --gates 2
+```
+
+Requires `PyQt6` to be installed. Falls back to CLI mode if unavailable.
+
 ### Reset the question bank
 
 To mark all questions as unasked again (e.g. start a fresh challenge with the same player record):
@@ -172,8 +183,10 @@ Scores are sorted by lowest `elapsed_seconds` then lowest `moves`. Use `scores` 
 | `maze.py` | Maze domain model and factories |
 | `db.py` | SQLite persistence via SQLModel |
 | `puzzles.py` | Puzzle registry (16 gate-specific puzzles + fallback) |
-| `interfaces.md` | Module contracts (stable API between all three modules) |
-| `tests/` | 100 unit and integration tests |
+| `gui/` | PyQt6 GUI (forms, canvas, controller) — in development |
+| `gui_main.py` | GUI entry point |
+| `interfaces.md` | Module contracts (stable API between all modules) |
+| `tests/` | 110+ unit and integration tests (26 GUI tests skip without PyQt6) |
 
 ---
 
@@ -183,14 +196,14 @@ Scores are sorted by lowest `elapsed_seconds` then lowest `moves`. Use `scores` 
 python -m pytest -q
 ```
 
-All 100 tests should pass.
+Core tests (105) should pass. GUI widget tests (26) are skipped when PyQt6 is not installed.
 
 ---
 
 ## Architecture Notes
 
 - `maze.py` and `db.py` have **no cross-imports** — `main.py` is the only integration point.
-- The engine is **UI-agnostic**: `GameEngine.handle(Command)` returns a `GameOutput` dataclass. The CLI is one adapter; a future PyQt UI would be another.
+- The engine is **UI-agnostic**: `GameEngine.handle(Command)` returns a `GameOutput` dataclass. The CLI is one adapter; the PyQt GUI (launched with `--gui`) is another.
 - Persistence uses **SQLite via SQLModel**. Game state, scores, and the question bank are all stored in `game_save.db`.
 - Fog of war is tracked via a `visited` set in persisted game state — no maze logic changes required.
 - Maze generation is deterministic given a seed. `build_square_maze(size, seed, num_gates)` uses a seeded RNG to carve a spanning tree and place gates on the solution path.

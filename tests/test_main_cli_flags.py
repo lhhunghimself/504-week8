@@ -50,13 +50,21 @@ def test_parse_startup_flags_gates():
     assert cfg.num_gates == 3
 
 
+def test_parse_startup_flags_gui():
+    main = _import_main()
+    cfg = main._parse_startup_flags(["--gui"])
+    assert cfg.gui is True
+    assert cfg.maze_size == 3
+
+
 def test_parse_startup_flags_all_combined():
     main = _import_main()
-    cfg = main._parse_startup_flags(["--size", "5", "--seed", "99", "--gates", "2", "--reset-game"])
+    cfg = main._parse_startup_flags(["--size", "5", "--seed", "99", "--gates", "2", "--reset-game", "--gui"])
     assert cfg.maze_size == 5
     assert cfg.maze_seed == 99
     assert cfg.num_gates == 2
     assert cfg.reset_game is True
+    assert cfg.gui is True
 
 
 def test_parse_startup_flags_rejects_unknown_arguments():

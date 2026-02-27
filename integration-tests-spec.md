@@ -241,9 +241,187 @@ A feature branch may merge only if:
   3. affected tests
 - Contract changes require explicit review by all component owners.
 
+### D. GUI Contract Tests (`tests/test_gui_integration.py`) — no Qt dependency
+
+These tests validate the `MazeSnapshot` / `CellView` data contract and the engine-to-GUI boundary without importing PyQt6. They use the real engine with a test maze and repo.
+
+1) `test_maze_snapshot_matches_game_view`
+- Start a new engine with the minimal 3x3 maze
+- Call `view()` and inspect `view.maze_snapshot`
+- Assert `maze_snapshot` is not `None`
+- Assert `len(maze_snapshot.cells) == maze_snapshot.width * maze_snapshot.height`
+- Assert exactly one cell has `is_player=True`
+- Assert unvisited cells have `visible=False`
+
+2) `test_maze_snapshot_updates_after_movement`
+- Start a new game, record the set of visible cells from `view().maze_snapshot`
+- Move in a valid direction
+- Assert the set of visible cells increased (the destination cell flipped to `visible=True`)
+
+3) `test_maze_snapshot_gate_status_reflects_solved`
+- Start a new game, navigate to trigger a gated puzzle
+- Before solving: assert the gate cell has `has_gate=True`, `solved=False`
+- Solve the puzzle with the correct answer
+- Assert the gate cell has `has_gate=False`, `solved=True`
+
+4) `test_cell_view_kind_matches_maze_cell_kind`
+- For every cell in `maze_snapshot`, assert `kind` matches `maze.cell(pos).kind.value`
+
+5) `test_cell_view_connections_only_on_visible_cells`
+- For each cell in `maze_snapshot`:
+  - If `visible=True`, assert `connections` is non-empty (for non-isolated cells) and sorted
+  - If `visible=False`, assert `connections == []`
+
+### E. Forms Panel Widget Tests (`tests/test_gui_forms.py`) — uses `pytest-qt`
+
+These tests validate Team 1's widgets in isolation using hardcoded dummy data. No engine or DB imports needed. Tests are skipped if `PyQt6` is not installed.
+
+1) `test_direction_buttons_emit_correct_commands`
+- Instantiate `FormsPanel`
+- Click N/S/E/W buttons
+- Assert `command_issued` signal emits `Command(verb="go", args=["N"])` etc.
+
+2) `test_answer_submit_emits_command`
+- Instantiate `PuzzleDialog`
+- Set text "len" in answer input, click Submit
+- Assert `answer_submitted` signal emits `"len"`
+
+3) `test_hint_options_render_as_buttons`
+- Instantiate `PuzzleDialog`
+- Call `show_hint_options([{"type": "letter", "label": "First letter (-1pt)", "cost": 1}, ...])`
+- Assert one button exists per option
+
+4) `test_hint_button_emits_hint_command`
+- After showing hint options, click the "letter" button
+- Assert `hint_requested` signal emits `"letter"`
+
+5) `test_movement_buttons_disabled_when_unavailable`
+- Call `update_view(view)` where `view.available_moves == ["N", "E"]`
+- Assert S and W buttons are disabled; N and E buttons are enabled
+
+6) `test_puzzle_panel_hidden_when_no_puzzle`
+- Call `show_puzzle(None)`
+- Assert the puzzle area widget is not visible
+
+7) `test_puzzle_panel_shows_prompt`
+- Call `show_puzzle({"puzzle_id": "x", "title": "T", "prompt": "P"})`
+- Assert the title label contains "T" and the prompt label contains "P"
+
+8) `test_status_bar_displays_all_fields`
+- Call `update_status(view)` with known field values
+- Assert rendered text contains position, moves, and visited_count
+
+9) `test_score_board_renders_rows`
+- Call `show_scores([{"player_handle": "neo", "metrics": {...}}, ...])`
+- Assert the table has one row per score
+
+10) `test_completion_screen_shown`
+- Call `update_view(view)` where `view.is_complete == True`
+- Assert a completion overlay or label is visible
+
+### F. Maze Canvas Widget Tests (`tests/test_gui_canvas.py`) — uses `pytest-qt`
+
+These tests validate Team 2's canvas widget in isolation using hardcoded `MazeSnapshot` objects. Tests are skipped if `PyQt6` is not installed.
+
+1) `test_canvas_renders_correct_cell_count`
+- Create a 3x3 `MazeSnapshot` with 9 `CellView` items
+- Call `update_maze(snapshot)`
+- Assert 9 cell items exist in the scene/canvas
+
+2) `test_fog_cells_rendered_differently`
+- Provide a snapshot where some cells have `visible=False`
+- Assert fog cells use a distinct visual style (color, opacity, or icon)
+
+3) `test_player_cell_highlighted`
+- Provide a snapshot with one cell having `is_player=True`
+- Assert that cell has a player visual indicator
+
+4) `test_gate_cell_marked`
+- Provide a snapshot with one cell having `has_gate=True`
+- Assert that cell has a gate visual indicator
+
+5) `test_connections_drawn`
+- Provide a cell with `connections=["E"]`
+- Assert an east passage/corridor visual exists for that cell
+
+6) `test_click_adjacent_cell_emits_direction`
+- Set player at (1,1); click cell at (0,1)
+- Assert `direction_clicked` signal emits `"N"`
+
+7) `test_update_redraws_only_changed_cells`
+- Send two snapshots differing by 1 cell (visibility flip)
+- Assert only the changed cell was redrawn (track via paint/update spy)
+
+8) `test_canvas_handles_variable_sizes`
+- Render snapshots of size 3x3, 5x5, 7x7
+- Assert cell count matches `width * height` in each case
+
+### G. End-to-End GUI Wiring Tests (`tests/test_gui_wiring.py`) — uses `pytest-qt`
+
+These tests validate the Controller/EngineWorker wiring. They require `PyQt6` and are skipped if not installed.
+
+1) `test_gui_startup_shows_initial_view`
+- Wire Controller to mock FormsPanel and MazeCanvas
+- After startup, assert both received `view_changed` / `update_maze` with initial `GameView`
+
+2) `test_direction_click_updates_both_panels`
+- Simulate `direction_clicked("N")` from MazeCanvas mock
+- Assert Controller routes it to engine and both FormsPanel and MazeCanvas receive updated view
+
+3) `test_puzzle_flow_through_gui`
+- Move to a gated cell
+- Assert `show_puzzle` was called on PuzzleDialog
+- Simulate `answer_submitted("correct_answer")`
+- Assert `show_puzzle(None)` called (dialog hidden)
+
+4) `test_hint_flow_through_gui`
+- Trigger a puzzle, simulate `hint_requested("")` (bare hint)
+- Assert `show_hint_options` called with 4 options
+- Simulate `hint_requested("letter")`
+- Assert `show_hint_result` called with a clue string
+
+5) `test_game_completion_shows_score`
+- Drive engine to completion via Controller
+- Assert `game_completed` signal emitted with metrics dict
+
+6) `test_save_indicator_on_persist`
+- Issue a movement command through Controller
+- Assert `did_persist=True` in the resulting `GameOutput`
+- Assert FormsPanel received a "saved" indication
+
+## Test Data and Fixtures
+
+Recommended shared fixtures (`tests/conftest.py`):
+- `maze`: minimal 3x3 maze
+- `repo`: SQLite repository at `tmp_path / "game.db"` (via `open_repo`)
+- `procedural_maze`: `build_square_maze(size=5, seed=42, num_gates=2)` for multi-gate tests
+- `puzzle_registry`: deterministic puzzles with known correct answers
+- `engine`: initialized game engine with test player/game
+- `clock`: fixed or manually incremented test clock
+
+Recommended GUI-specific fixtures:
+- `dummy_game_view()`: a `GameView` with hardcoded fields for widget testing (no engine needed)
+- `dummy_maze_snapshot(width, height)`: a `MazeSnapshot` with visible/fog cells for canvas testing
+- `dummy_hint_options()`: a list of 4 hint option dicts
+- `dummy_pending_puzzle()`: a `pending_puzzle` dict for puzzle dialog testing
+
+## Merge Gate Rules
+
+A feature branch may merge only if:
+- Its own unit tests pass
+- All required integration tests pass
+- No interface contract regressions against `interfaces.md`
+
+## Regression Policy
+
+- If a contract changes intentionally, update:
+  1. `interfaces.md`
+  2. this integration spec
+  3. affected tests
+- Contract changes require explicit review by all component owners.
+
 ## Non-Goals for This Phase
 
-- PyQt rendering tests
-- performance/load testing
-- networked multiplayer behavior
-- hint quality/content validation (clue text is tested for presence, not pedagogical value)
+- Performance/load testing
+- Networked multiplayer behavior
+- Hint quality/content validation (clue text is tested for presence, not pedagogical value)

@@ -11,8 +11,8 @@ Source-of-truth docs:
 
 ## Purpose (and Non-Goals)
 
-**Purpose**: enable multiple developers/agents to implement `maze.py`, `db.py`, and `main.py` independently, with shared integration tests acting as the executable contract.
-**Non-goals for this phase**: PyQt UI tests, randomized maze generation, performance/load testing, multiplayer/networking.
+**Purpose**: enable multiple developers/agents to implement `maze.py`, `db.py`, `main.py`, and the PyQt GUI layer independently, with shared integration tests acting as the executable contract.
+**Non-goals for this phase**: performance/load testing, multiplayer/networking.
 
 ## Module Ownership and Boundaries
 
@@ -23,8 +23,12 @@ Hard dependency rule (do not violate):
 
 Responsibilities:
 - **`maze.py` (Maze Owner)**: deterministic maze factory + topology/movement API + gate/puzzle hooks (no puzzle logic).
-- **`db.py` (DB Owner)**: JSON-backed repository implementing the repo interface (mock ORM boundary) storing JSON-safe primitives only.
+- **`db.py` (DB Owner)**: SQLite-backed repository via SQLModel, storing JSON-safe primitives only.
 - **`main.py` (Engine/CLI Owner)**: UI-agnostic engine + CLI adapter; uses `Maze` + repository + puzzle registry.
+- **`gui/` (GUI Teams 1-3)**: PyQt6 graphical interface; see `interfaces.md` §7 for contracts.
+  - **Team 1 (UI/UX)**: `gui/forms_panel.py`, `gui/puzzle_dialog.py`, `gui/status_bar.py`, `gui/score_board.py`
+  - **Team 2 (Canvas)**: `gui/maze_canvas.py`
+  - **Team 3 (Controller)**: `gui/controller.py`, `gui/engine_worker.py`, `gui_main.py`
 
 ## Workflow and Branching
 
@@ -39,7 +43,7 @@ Feature branches (recommended standard):
 - `refactor/<area>-<short-description>` (refactors without behavior change)
 
 Areas (pick one):
-- `maze`, `db`, `engine`, `cli`, `puzzles`, `docs`, `tests`
+- `maze`, `db`, `engine`, `cli`, `puzzles`, `gui-forms`, `gui-canvas`, `gui-controller`, `docs`, `tests`
 
 Examples:
 - `feat/maze-minimal-3x3`
@@ -51,6 +55,9 @@ Merge order:
 1. Maze contract work can merge once Maze P0 tests pass.
 2. DB contract work can merge once Repo P0 tests pass.
 3. Engine/CLI merges once Maze+DB contracts are stable and Engine P0 tests pass.
+4. GUI Team 3 (Controller) merges first among GUI branches (adds `MazeSnapshot` to `main.py`, `--gui` flag).
+5. GUI Teams 1 (Forms) and 2 (Canvas) merge after Team 3 (they only add files in `gui/`).
+6. Integration branch runs G-series wiring tests to validate full GUI.
 
 ## Merge Gate (Must Pass)
 
@@ -120,6 +127,27 @@ DB portability:
 Engine UI-agnostic guarantees:
 - Ensure the engine returns a stable `GameView` that can render in both CLI and PyQt without accessing internal engine state.
 
+### P3 — PyQt GUI (parallel team development)
+
+GUI contract tests (`tests/test_gui_integration.py`) — no PyQt dependency:
+- D.1 `test_maze_snapshot_matches_game_view`
+- D.2 `test_maze_snapshot_updates_after_movement`
+- D.3 `test_maze_snapshot_gate_status_reflects_solved`
+- D.4 `test_cell_view_kind_matches_maze_cell_kind`
+- D.5 `test_cell_view_connections_only_on_visible_cells`
+
+Forms panel tests (`tests/test_gui_forms.py`) — requires `pytest-qt`:
+- E.1–E.10: direction buttons, answer submit, hint options, movement enable/disable,
+  puzzle show/hide, status bar, score board, completion screen
+
+Canvas tests (`tests/test_gui_canvas.py`) — requires `pytest-qt`:
+- F.1–F.8: cell count, fog styling, player highlight, gate markers,
+  connections, click-to-move, partial redraw, variable sizes
+
+Wiring tests (`tests/test_gui_wiring.py`) — requires `pytest-qt`:
+- G.1–G.6: startup view, direction click propagation, puzzle flow,
+  hint flow, game completion signal, save indicator
+
 ## Per-Module Implementation Checklists (Tied to Shared Tests)
 
 Each checklist item must be satisfied *and* the referenced tests must pass.
@@ -165,6 +193,71 @@ Done when:
 
 Done when:
 - All Engine P0 tests pass and `main.py` runs a playable mini-game via CLI.
+
+### GUI Team 1 (UI/UX Forms) Checklist (`gui/forms_panel.py`, `gui/puzzle_dialog.py`, `gui/status_bar.py`, `gui/score_board.py`)
+
+- [ ] `FormsPanel` with N/S/E/W buttons emitting `command_issued(Command)`.
+  - **Verify**: `tests/test_gui_forms.py::test_direction_buttons_emit_correct_commands`
+- [ ] Movement buttons disable when direction unavailable.
+  - **Verify**: `tests/test_gui_forms.py::test_movement_buttons_disabled_when_unavailable`
+- [ ] `PuzzleDialog` with answer input and submit button emitting `answer_submitted(str)`.
+  - **Verify**: `tests/test_gui_forms.py::test_answer_submit_emits_command`
+- [ ] Hint options render as buttons, emit `hint_requested(str)`.
+  - **Verify**: `tests/test_gui_forms.py::test_hint_options_render_as_buttons`, `test_hint_button_emits_hint_command`
+- [ ] Puzzle panel show/hide via `show_puzzle(dict | None)`.
+  - **Verify**: `tests/test_gui_forms.py::test_puzzle_panel_hidden_when_no_puzzle`, `test_puzzle_panel_shows_prompt`
+- [ ] `StatusBar` displays position, moves, visited count.
+  - **Verify**: `tests/test_gui_forms.py::test_status_bar_displays_all_fields`
+- [ ] `ScoreBoard` renders score rows.
+  - **Verify**: `tests/test_gui_forms.py::test_score_board_renders_rows`
+- [ ] Completion overlay when `is_complete=True`.
+  - **Verify**: `tests/test_gui_forms.py::test_completion_screen_shown`
+
+Done when:
+- All E-series tests pass with dummy data (no engine required).
+
+### GUI Team 2 (Canvas) Checklist (`gui/maze_canvas.py`)
+
+- [ ] Canvas renders correct cell count from `MazeSnapshot`.
+  - **Verify**: `tests/test_gui_canvas.py::test_canvas_renders_correct_cell_count`
+- [ ] Fog cells visually distinct from visible cells.
+  - **Verify**: `tests/test_gui_canvas.py::test_fog_cells_rendered_differently`
+- [ ] Player cell has visual indicator.
+  - **Verify**: `tests/test_gui_canvas.py::test_player_cell_highlighted`
+- [ ] Gate cells marked visually.
+  - **Verify**: `tests/test_gui_canvas.py::test_gate_cell_marked`
+- [ ] Connections/corridors drawn between cells.
+  - **Verify**: `tests/test_gui_canvas.py::test_connections_drawn`
+- [ ] Click on adjacent cell emits `direction_clicked(str)`.
+  - **Verify**: `tests/test_gui_canvas.py::test_click_adjacent_cell_emits_direction`
+- [ ] Partial redraw on incremental updates.
+  - **Verify**: `tests/test_gui_canvas.py::test_update_redraws_only_changed_cells`
+- [ ] Handles 3x3, 5x5, 7x7 snapshots.
+  - **Verify**: `tests/test_gui_canvas.py::test_canvas_handles_variable_sizes`
+
+Done when:
+- All F-series tests pass with hardcoded `MazeSnapshot` data (no engine required).
+
+### GUI Team 3 (Controller) Checklist (`gui/controller.py`, `gui/engine_worker.py`, `gui_main.py`)
+
+- [ ] `GameController` broadcasts `view_changed` on startup.
+  - **Verify**: `tests/test_gui_wiring.py::test_gui_startup_shows_initial_view`
+- [ ] Direction commands propagate through Controller to engine and back to widgets.
+  - **Verify**: `tests/test_gui_wiring.py::test_direction_click_updates_both_panels`
+- [ ] Puzzle flow: gate -> puzzle dialog -> answer -> clear.
+  - **Verify**: `tests/test_gui_wiring.py::test_puzzle_flow_through_gui`
+- [ ] Hint flow: bare hint -> options -> typed hint -> clue.
+  - **Verify**: `tests/test_gui_wiring.py::test_hint_flow_through_gui`
+- [ ] Game completion emits `game_completed` signal.
+  - **Verify**: `tests/test_gui_wiring.py::test_game_completion_shows_score`
+- [ ] `MazeSnapshot` populated in every `GameView`.
+  - **Verify**: `tests/test_gui_integration.py::test_maze_snapshot_matches_game_view`
+- [ ] `--gui` flag in `_parse_startup_flags`.
+  - **Verify**: `tests/test_main_cli_flags.py::test_parse_startup_flags_gui_flag`
+
+Done when:
+- All D-series and G-series tests pass.
+- `python main.py --gui` launches the PyQt window.
 
 ## Execution Sequence (Recommended)
 

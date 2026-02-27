@@ -85,3 +85,9 @@ func send_direction(direction: String) -> void:
 		return
 	var payload := JSON.stringify({"type": "direction", "value": direction})
 	_socket.send_text(payload)
+
+func send_facing(direction: String) -> void:
+	if _socket.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		return
+	var payload := JSON.stringify({"type": "facing", "value": direction})
+	_socket.send_text(payload)

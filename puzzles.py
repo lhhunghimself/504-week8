@@ -19,7 +19,7 @@ Role in the game:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -224,7 +224,7 @@ _PUZZLES: list[Puzzle] = [
             "    print(token[1:4])\n"
             "\n"
             "  What does this print?\n"
-            "  (three letters, exact case)"
+            "  (three letters, lowercase)"
         ),
         _accept=("xpl",),
         category="output",

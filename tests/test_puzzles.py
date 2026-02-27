@@ -197,3 +197,54 @@ def test_minimal_maze_gate_ids_are_in_registry(registry):
         assert p.id == gate_id, (
             f"Expected specific puzzle for {gate_id!r} but got fallback ({p.id!r})"
         )
+
+
+# ---------------------------------------------------------------------------
+# Fallback puzzle contract
+# ---------------------------------------------------------------------------
+
+def test_fallback_satisfies_full_contract(registry):
+    """The fallback puzzle must itself satisfy all §5.2 contract requirements."""
+    fallback = registry.get("gate-this-id-does-not-exist-999")
+    assert isinstance(fallback.id, str) and fallback.id.strip(), \
+        "Fallback id must be a non-empty string"
+    assert isinstance(fallback.title, str) and fallback.title.strip(), \
+        "Fallback title must be a non-empty string"
+    assert isinstance(fallback.prompt, str) and fallback.prompt.strip(), \
+        "Fallback prompt must be a non-empty string"
+    assert fallback.category in VALID_CATEGORIES, (
+        f"Fallback category {fallback.category!r} not in {VALID_CATEGORIES}"
+    )
+    assert fallback.difficulty in VALID_DIFFICULTIES, (
+        f"Fallback difficulty {fallback.difficulty!r} not in {VALID_DIFFICULTIES}"
+    )
+    assert isinstance(fallback.hint_answer, str), \
+        "Fallback hint_answer must be a string"
+    assert fallback.hint_answer, "Fallback hint_answer must be non-empty"
+    assert fallback.check(fallback._accept[0], {}), \
+        "Fallback check() must accept its own first accepted answer"
+
+
+# ---------------------------------------------------------------------------
+# Cross-source deduplication
+# ---------------------------------------------------------------------------
+
+def test_no_prompt_overlap_between_registry_and_seed(puzzles_module):
+    """No question_text in HACKER_SEED_QUESTIONS should exactly duplicate a registry prompt."""
+    try:
+        import db
+    except ModuleNotFoundError:
+        pytest.skip("db module not importable; skipping cross-source dedup check")
+
+    seed = getattr(db, "HACKER_SEED_QUESTIONS", [])
+    _puzzles = getattr(puzzles_module, "_PUZZLES", [])
+
+    registry_prompts = {p.prompt.strip().lower() for p in _puzzles}
+    duplicates = [
+        q["id"]
+        for q in seed
+        if q["question_text"].strip().lower() in registry_prompts
+    ]
+    assert not duplicates, (
+        f"HACKER_SEED_QUESTIONS questions duplicate registry prompts exactly: {duplicates}"
+    )

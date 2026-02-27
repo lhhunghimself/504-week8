@@ -87,7 +87,7 @@ keyword challenge.
 
 ## Test coverage
 
-New test file `tests/test_puzzles.py` (13 tests):
+New test file `tests/test_puzzles.py` (17 tests):
 
 | Test | What it validates |
 |---|---|
@@ -106,3 +106,11 @@ New test file `tests/test_puzzles.py` (13 tests):
 | `test_fallback_puzzle_is_thematic` | fallback is not the trivial "1+1" question |
 | `test_registry_fallback_check_works` | fallback correct answer passes check() |
 | `test_minimal_maze_gate_ids_are_in_registry` | gate-python-basics-1/2/3 have specific puzzles |
+| `test_fallback_satisfies_full_contract` | fallback category/difficulty/hint_answer are valid |
+| `test_no_prompt_overlap_between_registry_and_seed` | db seed and registry share no exact question text |
+
+New test in `tests/test_repo_contract.py` (1 test):
+
+| Test | What it validates |
+|---|---|
+| `test_hacker_seed_questions_contract` | HACKER_SEED_QUESTIONS IDs unique, keys present, all 4 categories covered |

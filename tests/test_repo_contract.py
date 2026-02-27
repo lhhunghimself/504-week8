@@ -176,3 +176,29 @@ def test_get_game_returns_none_for_unknown_id(repo):
     result = repo.get_game("nonexistent-id")
     assert result is None
 
+
+def test_hacker_seed_questions_contract(db_module):
+    """HACKER_SEED_QUESTIONS: IDs unique, required keys present, all 4 categories covered."""
+    seed = getattr(db_module, "HACKER_SEED_QUESTIONS", None)
+    assert seed is not None, "db.HACKER_SEED_QUESTIONS must exist"
+    assert len(seed) > 0, "HACKER_SEED_QUESTIONS must be non-empty"
+
+    required_keys = {"id", "question_text", "correct_answer", "category"}
+    ids = []
+    categories_seen = set()
+    for q in seed:
+        missing = required_keys - q.keys()
+        assert not missing, f"Question {q.get('id')!r} missing keys: {missing}"
+        ids.append(q["id"])
+        categories_seen.add(q["category"])
+
+    assert len(ids) == len(set(ids)), (
+        f"Duplicate IDs in HACKER_SEED_QUESTIONS: {[x for x in ids if ids.count(x) > 1]}"
+    )
+
+    expected_categories = {"python", "security", "output", "debugging"}
+    missing_cats = expected_categories - categories_seen
+    assert not missing_cats, (
+        f"HACKER_SEED_QUESTIONS missing questions for categories: {missing_cats}"
+    )
+

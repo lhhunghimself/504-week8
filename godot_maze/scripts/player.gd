@@ -53,6 +53,7 @@ func _on_maze_update(snapshot: Dictionary) -> void:
 				_teleport_to_grid()
 				_has_spawned = true
 			break
+	_broadcast_facing()
 
 func _on_highlight_player(row: int, col: int) -> void:
 	if _grid_row != row or _grid_col != col:
@@ -129,13 +130,23 @@ func _try_move(dir: String) -> void:
 func _snap_turn(degrees: float) -> void:
 	_is_moving = true
 	_facing_yaw = fmod(_facing_yaw + degrees + 360.0, 360.0)
+	# Report facing immediately so Qt labels/minimap update on turn-only input.
+	_broadcast_facing()
 	var tween := create_tween()
 	tween.tween_property(self, "rotation_degrees:y", -_facing_yaw, TURN_DURATION)\
 		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-	tween.tween_callback(func(): _is_moving = false)
+	tween.tween_callback(func():
+		_is_moving = false
+		_broadcast_facing()
+	)
 
 func _apply_yaw() -> void:
 	rotation_degrees.y = -_facing_yaw
+	_broadcast_facing()
+
+func _broadcast_facing() -> void:
+	if _ws != null and _ws.has_method("send_facing"):
+		_ws.call("send_facing", _facing_to_cardinal())
 
 func _facing_to_cardinal() -> String:
 	# Snap yaw to nearest cardinal
@@ -172,3 +183,6 @@ static func _right_of(dir: String) -> String:
 		"S": return "W"
 		"W": return "N"
 	return dir
+
+func get_facing_dir() -> String:
+	return _facing_to_cardinal()

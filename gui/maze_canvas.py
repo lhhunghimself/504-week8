@@ -30,8 +30,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QProcess, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen
+from PyQt6.QtCore import QPointF, QProcess, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QWidget
 
 try:
@@ -104,6 +104,7 @@ class MazeCanvas(QWidget):
 
     direction_clicked = pyqtSignal(str)
     godot_process_started = pyqtSignal(int)
+    facing_changed = pyqtSignal(str)
 
     def __init__(
         self,
@@ -118,6 +119,7 @@ class MazeCanvas(QWidget):
         self._cells: dict[tuple[int, int], _CellState] = {}
         self._player_pos: tuple[int, int] | None = None
         self._last_changed: list[tuple[int, int]] = []
+        self._facing_dir: str = "S"
         self.setMinimumSize(200, 200)
 
         # Godot bridge state
@@ -190,7 +192,12 @@ class MazeCanvas(QWidget):
         if msg.get("type") == "direction":
             value = msg.get("value", "")
             if value in ("N", "S", "E", "W"):
+                self._set_facing_dir(value)
                 self.direction_clicked.emit(value)
+        elif msg.get("type") == "facing":
+            value = msg.get("value", "")
+            if value in ("N", "S", "E", "W"):
+                self._set_facing_dir(value)
 
     def _send_to_godot(self, msg: dict) -> None:
         text = json.dumps(msg, separators=(",", ":"))
@@ -383,8 +390,22 @@ class MazeCanvas(QWidget):
         d = (direction or "").strip().upper()
         if d not in {"N", "S", "E", "W"}:
             return
+        self._set_facing_dir(d)
         if self._godot_available:
             self._send_to_godot({"type": "set_view_direction", "value": d})
+
+    def facing_direction(self) -> str:
+        return self._facing_dir
+
+    def _set_facing_dir(self, direction: str) -> None:
+        d = (direction or "").strip().upper()
+        if d not in {"N", "S", "E", "W"}:
+            return
+        if d == self._facing_dir:
+            return
+        self._facing_dir = d
+        self.facing_changed.emit(d)
+        self.update()
 
     # -- Test query methods -------------------------------------------------
 
@@ -430,6 +451,7 @@ class MazeCanvas(QWidget):
         direction_map = {(-1, 0): "N", (1, 0): "S", (0, -1): "W", (0, 1): "E"}
         direction = direction_map.get((dr, dc))
         if direction:
+            self._set_facing_dir(direction)
             self.direction_clicked.emit(direction)
 
     def last_update_changed_cells(self) -> list[tuple[int, int]]:
@@ -495,11 +517,30 @@ class MazeCanvas(QWidget):
         return COLOR_VISIBLE
 
     def _draw_player(self, painter: QPainter, rect: QRectF) -> None:
-        painter.setBrush(COLOR_PLAYER)
-        painter.setPen(Qt.PenStyle.NoPen)
         cx, cy = rect.center().x(), rect.center().y()
-        r = min(rect.width(), rect.height()) * 0.3
-        painter.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+        r = min(rect.width(), rect.height()) * 0.34
+
+        # Arrow points are normalized to radius r.
+        points_by_dir: dict[str, list[tuple[float, float]]] = {
+            "N": [(0.0, -1.0), (-0.8, 0.75), (0.8, 0.75)],
+            "S": [(0.0, 1.0), (-0.8, -0.75), (0.8, -0.75)],
+            "E": [(1.0, 0.0), (-0.75, -0.8), (-0.75, 0.8)],
+            "W": [(-1.0, 0.0), (0.75, -0.8), (0.75, 0.8)],
+        }
+        points_norm = points_by_dir.get(self._facing_dir)
+        if not points_norm:
+            painter.setBrush(COLOR_PLAYER)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+            return
+
+        poly = QPolygonF([
+            QPointF(cx + dx * r, cy + dy * r)
+            for dx, dy in points_norm
+        ])
+        painter.setBrush(COLOR_PLAYER)
+        painter.setPen(QPen(QColor("#ffffff"), 1))
+        painter.drawPolygon(poly)
 
     def _draw_gate(self, painter: QPainter, rect: QRectF) -> None:
         font = QFont("monospace", 14, QFont.Weight.Bold)

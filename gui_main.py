@@ -139,6 +139,9 @@ class MainWindow(QMainWindow):
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
+        self._facing_label = QLabel("Facing: S")
+        self._facing_label.setStyleSheet("font-family: monospace; color: #9be79b; padding: 4px;")
+        left_layout.addWidget(self._facing_label)
 
         self._godot_embed_timer: QTimer | None = None
         self._godot_embed_pid: int | None = None
@@ -231,6 +234,8 @@ class MainWindow(QMainWindow):
                 lambda d: c.on_command(Command(verb="go", args=[d]))
             )
             self._canvas.godot_process_started.connect(self._on_godot_process_started)
+            self._canvas.facing_changed.connect(self._on_facing_changed)
+            self._on_facing_changed(self._canvas.facing_direction())
         elif isinstance(self._canvas, _StubMapWidget):
             c.view_changed.connect(self._canvas.update_from_view)
 
@@ -377,6 +382,12 @@ class MainWindow(QMainWindow):
                 self._scores.show_scores(scores)
             except Exception:
                 pass
+
+    def _on_facing_changed(self, direction: str) -> None:
+        d = (direction or "").strip().upper()
+        if d not in {"N", "S", "E", "W"}:
+            d = "?"
+        self._facing_label.setText(f"Facing: {d}")
 
 
 def gui_main(config: StartupConfig | None = None) -> None:

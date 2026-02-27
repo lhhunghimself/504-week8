@@ -58,6 +58,37 @@ python main.py --gui --size 5 --gates 2
 
 Requires `PyQt6` to be installed. Falls back to CLI mode if unavailable.
 
+### 3D Maze Renderer (Godot 4)
+
+When Godot 4 is installed, the GUI launches a separate first-person 3D window (Doom/Duke Nukem style) alongside the PyQt forms. The two processes communicate via WebSocket.
+
+**Setup:**
+
+1. Install [Godot 4.2+](https://godotengine.org/download) and ensure `godot` is on your PATH
+2. The Godot project lives in `godot_maze/` — no manual setup needed
+
+**Usage:**
+
+```bash
+python main.py --gui                    # 3D maze + PyQt forms
+python main.py --gui --no-godot         # PyQt only (2D grid fallback)
+```
+
+If Godot is not installed, the canvas automatically falls back to the 2D QPainter grid.
+
+**Controls in the 3D window:**
+
+| Key | Action |
+|---|---|
+| W / Up | Move forward |
+| S / Down | Move backward |
+| A | Strafe left |
+| D | Strafe right |
+| Q / Left | Turn left 90 degrees |
+| E / Right | Turn right 90 degrees |
+
+Movement is grid-locked (one cell at a time) with smooth tween interpolation.
+
 ### Reset the question bank
 
 To mark all questions as unasked again (e.g. start a fresh challenge with the same player record):
@@ -185,6 +216,7 @@ Scores are sorted by lowest `elapsed_seconds` then lowest `moves`. Use `scores` 
 | `puzzles.py` | Puzzle registry (16 gate-specific puzzles + fallback) |
 | `gui/` | PyQt6 GUI (forms, canvas, controller) — in development |
 | `gui_main.py` | GUI entry point |
+| `godot_maze/` | Godot 4 first-person 3D maze renderer project |
 | `interfaces.md` | Module contracts (stable API between all modules) |
 | `tests/` | 110+ unit and integration tests (26 GUI tests skip without PyQt6) |
 
@@ -203,7 +235,7 @@ Core tests (105) should pass. GUI widget tests (26) are skipped when PyQt6 is no
 ## Architecture Notes
 
 - `maze.py` and `db.py` have **no cross-imports** — `main.py` is the only integration point.
-- The engine is **UI-agnostic**: `GameEngine.handle(Command)` returns a `GameOutput` dataclass. The CLI is one adapter; the PyQt GUI (launched with `--gui`) is another.
+- The engine is **UI-agnostic**: `GameEngine.handle(Command)` returns a `GameOutput` dataclass. The CLI is one adapter; the PyQt GUI (launched with `--gui`) is another. The optional Godot 3D renderer runs as a separate process communicating via WebSocket — it receives `MazeSnapshot` JSON and sends direction commands back.
 - Persistence uses **SQLite via SQLModel**. Game state, scores, and the question bank are all stored in `game_save.db`.
 - Fog of war is tracked via a `visited` set in persisted game state — no maze logic changes required.
 - Maze generation is deterministic given a seed. `build_square_maze(size, seed, num_gates)` uses a seeded RNG to carve a spanning tree and place gates on the solution path.

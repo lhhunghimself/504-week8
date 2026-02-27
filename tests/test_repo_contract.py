@@ -202,3 +202,41 @@ def test_hacker_seed_questions_contract(db_module):
         f"HACKER_SEED_QUESTIONS missing questions for categories: {missing_cats}"
     )
 
+
+def test_seed_questions_preserves_asked_flags_on_reseed(repo):
+    """Reseeding same IDs should preserve has_been_asked state by default."""
+    questions = [
+        {"id": "q1", "question_text": "What is root?", "correct_answer": "admin", "category": "security"},
+    ]
+    repo.seed_questions(questions)
+
+    q = repo.get_random_question()
+    assert q is not None and q["id"] == "q1"
+    repo.mark_question_asked("q1")
+    assert repo.get_random_question() is None
+
+    # Reseed should refresh content fields but not clear asked flags.
+    repo.seed_questions(questions)
+    assert repo.get_random_question() is None, (
+        "Reseeding must not re-enable already-asked questions unless reset is requested"
+    )
+
+
+def test_reset_questions_reenables_asked_questions_after_reseed(repo):
+    """Explicit reset should make previously asked questions available again."""
+    questions = [
+        {"id": "q1", "question_text": "What is root?", "correct_answer": "admin", "category": "security"},
+    ]
+    repo.seed_questions(questions)
+    repo.mark_question_asked("q1")
+    assert repo.get_random_question() is None
+
+    # Default reseed still preserves asked-state.
+    repo.seed_questions(questions)
+    assert repo.get_random_question() is None
+
+    # Explicit reset should clear asked flags.
+    repo.reset_questions()
+    q_after_reset = repo.get_random_question()
+    assert q_after_reset is not None and q_after_reset["id"] == "q1"
+

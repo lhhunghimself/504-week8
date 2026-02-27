@@ -222,9 +222,9 @@ HACKER_SEED_QUESTIONS: list[dict[str, Any]] = [
     {
         "id": "hq-security-03",
         "question_text": (
-            "SHELL ACCESS: An attacker gained remote shell access via the "
-            "classic protocol that sends data in cleartext. "
-            "What is the name of that protocol? (3 letters)"
+            "SHELL ACCESS: Before SSH existed, admins used a classic "
+            "protocol for remote shell access — but it sent all data "
+            "in cleartext. What replaced it? (3 letters)"
         ),
         "correct_answer": "ssh",
         "category": "security",
@@ -631,14 +631,24 @@ class SqliteGameRepository:
     def seed_questions(self, questions: list[dict[str, Any]]) -> None:
         with Session(self.engine) as session:
             for q in questions:
-                row = QuestionModel(
-                    id=q.get("id", str(uuid4())),
-                    question_text=q["question_text"],
-                    correct_answer=q["correct_answer"],
-                    category=q.get("category", ""),
-                    has_been_asked=False,
-                )
-                session.merge(row)
+                qid = q.get("id", str(uuid4()))
+                existing = session.get(QuestionModel, qid)
+                if existing is None:
+                    row = QuestionModel(
+                        id=qid,
+                        question_text=q["question_text"],
+                        correct_answer=q["correct_answer"],
+                        category=q.get("category", ""),
+                        has_been_asked=False,
+                    )
+                    session.add(row)
+                    continue
+
+                # Preserve asked-state on reseed; only refresh content fields.
+                existing.question_text = q["question_text"]
+                existing.correct_answer = q["correct_answer"]
+                existing.category = q.get("category", "")
+                session.add(existing)
             session.commit()
 
     def reset_questions(self) -> None:

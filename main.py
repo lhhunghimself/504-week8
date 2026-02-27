@@ -228,7 +228,8 @@ class GameEngine:
             if self._pending_db_question is not None:
                 cat = self._pending_db_question.get("category", "unknown")
             else:
-                cat = "python"
+                puzzle = self.puzzles.get(self._pending_gate_id)
+                cat = getattr(puzzle, "category", "python")
             return f"Clue: category is '{cat}'"
 
         if hint_type == "reveal":
@@ -495,13 +496,43 @@ def _parse_input(raw: str) -> Command:
     return Command(verb=tokens[0], args=tokens[1:])
 
 
-def cli_main() -> None:
+def _parse_startup_flags(argv: list[str]) -> bool:
+    """Parse CLI startup flags. Returns whether question bank reset was requested."""
+    unknown = [arg for arg in argv if arg != "--reset-game"]
+    if unknown:
+        raise ValueError(f"Unknown argument(s): {' '.join(unknown)}")
+    return "--reset-game" in argv
+
+
+def _initialize_question_bank(
+    repo: Any,
+    questions: list[dict[str, Any]],
+    *,
+    reset_game: bool,
+) -> None:
+    """Seed questions and optionally reset asked flags."""
+    repo.seed_questions(questions)
+    if reset_game:
+        repo.reset_questions()
+
+
+def cli_main(argv: list[str] | None = None) -> None:
     """Interactive CLI entry point for the quiz maze game."""
     from pathlib import Path
+    import sys
 
     from db import HACKER_SEED_QUESTIONS, open_repo
     from maze import build_minimal_3x3_maze
     from puzzles import PuzzleRegistry
+
+    if argv is None:
+        argv = sys.argv[1:]
+    try:
+        reset_game = _parse_startup_flags(argv)
+    except ValueError as e:
+        print(e)
+        print("Usage: python main.py [--reset-game]")
+        return
 
     print("=" * 50)
     print("  HACK THE MAZE  —  A Python Puzzle Adventure")
@@ -510,7 +541,9 @@ def cli_main() -> None:
 
     save_path = Path("game_save.db")
     repo = open_repo(save_path)
-    repo.seed_questions(HACKER_SEED_QUESTIONS)
+    _initialize_question_bank(repo, HACKER_SEED_QUESTIONS, reset_game=reset_game)
+    if reset_game:
+        print("Question bank reset: all questions marked unasked.")
 
     maze = build_minimal_3x3_maze()
     puzzles = PuzzleRegistry()

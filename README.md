@@ -1,0 +1,174 @@
+# Hack the Maze — A Python Puzzle Adventure
+
+A hacker-themed terminal quiz maze game. Navigate a network of cybersecurity nodes, answer Python and security questions to unlock gates, and race to reach root access.
+
+---
+
+## Requirements
+
+- Python 3.10+
+- Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+`requirements.txt` installs `sqlmodel` (SQLite ORM) and `pytest`.
+
+---
+
+## Running the Game
+
+```bash
+python main.py
+```
+
+On first launch you will be prompted for a hacker handle. Progress is saved automatically to `game_save.db` in the current directory. Each subsequent launch resumes where you left off — including which questions you have already been asked.
+
+### Reset the question bank
+
+To mark all questions as unasked again (e.g. start a fresh challenge with the same player record):
+
+```bash
+python main.py --reset-game
+```
+
+---
+
+## How to Play
+
+### Objective
+
+You start at the **Ingress Port** (top-left of a 3×3 network grid). Reach the **Root Access Gateway** (bottom-right) to win. Your score is based on elapsed time, number of moves, and hints used.
+
+### The Map
+
+The maze uses **fog of war** by default. Cells you have not yet visited are hidden (`###`). Move into a cell to reveal it.
+
+```
+ @ --###  ###      ← @ = you, ### = unexplored, S = start, X = exit
+ |
+###  ###  ###
+```
+
+### Movement
+
+| Command | Effect |
+|---|---|
+| `n` / `s` / `e` / `w` | Move north / south / east / west |
+| `go north` (or `go n`) | Same as above |
+
+Some edges are **gated** — moving into them triggers a puzzle challenge. You cannot pass until you answer correctly.
+
+### Puzzles and Gates
+
+When you hit a gate, a challenge appears:
+
+```
+>> PUZZLE: Firewall Lattice — Intrusion Counter
+The firewall's intrusion counter scans each packet in a list
+before deciding whether to trigger the alarm.
+
+  What built-in function returns the number of items in a list?
+  (one word)
+  Use: answer <your answer>  |  hint (for hint options)
+```
+
+Answer with:
+
+```
+answer len
+```
+
+Questions are drawn from a 27-question hacker-themed bank covering four categories:
+
+| Category | Topics |
+|---|---|
+| `python` | keywords, data structures, control flow, builtins |
+| `security` | ports, protocols, hashing, network recon |
+| `output` | "what does this print?" Python snippets |
+| `debugging` | tracebacks and error types |
+
+Once you have answered a question it will not be repeated in the same session (or across restarts unless `--reset-game` is used).
+
+### Hints
+
+When a puzzle is pending, type `hint` to see your options:
+
+```
+> hint
+
+  1. First letter of the answer (-1pt)
+  2. Character count of the answer (-1pt)
+  3. Question category (-1pt)
+  4. Progressive character reveal (-2pt)
+
+  Choose hint type (number or name, Enter to cancel):
+```
+
+Then enter a number or type name (e.g. `1` or `letter`). Each hint type has a cost that is added to your `hints_used` metric and recorded in your score.
+
+| Hint type | What you get | Cost |
+|---|---|---|
+| `letter` | First letter of the answer | 1 pt |
+| `count` | Character count of the answer | 1 pt |
+| `category` | Question category | 1 pt |
+| `reveal` | Progressive character-by-character reveal (one more char per use) | 2 pt |
+
+Press Enter at the hint menu to cancel without using a hint.
+
+### Other Commands
+
+| Command | Effect |
+|---|---|
+| `look` | Re-describe the current cell |
+| `map` | Redraw the fog-of-war map |
+| `status` | Show position, moves, gates solved, hints used, exploration % |
+| `save` | Explicitly save progress (also auto-saved on movement and puzzle solve) |
+| `scores` | Show top 5 scores for this maze |
+| `help` | Show command reference |
+| `quit` | Save and exit |
+
+### Scoring
+
+When you reach the exit a score is recorded with:
+
+- `elapsed_seconds` — wall-clock time from game start
+- `moves` — total movement commands
+- `puzzles_solved` — gates cleared
+- `hints_used` — total hint cost consumed
+
+Scores are sorted by lowest `elapsed_seconds` then lowest `moves`. Use `scores` to view the leaderboard.
+
+---
+
+## Project Structure
+
+| File | Purpose |
+|---|---|
+| `main.py` | Game engine + CLI adapter |
+| `maze.py` | Maze domain model and factories |
+| `db.py` | SQLite persistence via SQLModel |
+| `puzzles.py` | Puzzle registry (16 gate-specific puzzles + fallback) |
+| `interfaces.md` | Module contracts (stable API between all three modules) |
+| `tests/` | 88 unit and integration tests |
+
+---
+
+## Running Tests
+
+```bash
+python -m pytest -q
+```
+
+All 88 tests should pass.
+
+---
+
+## Architecture Notes
+
+- `maze.py` and `db.py` have **no cross-imports** — `main.py` is the only integration point.
+- The engine is **UI-agnostic**: `GameEngine.handle(Command)` returns a `GameOutput` dataclass. The CLI is one adapter; a future PyQt UI would be another.
+- Persistence uses **SQLite via SQLModel**. Game state, scores, and the question bank are all stored in `game_save.db`.
+- Fog of war is tracked via a `visited` set in persisted game state — no maze logic changes required.
+- The question bank deduplicates on restart: reseeding refreshes question text but preserves `has_been_asked` flags. Pass `--reset-game` to clear them.

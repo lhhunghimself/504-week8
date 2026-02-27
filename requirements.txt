@@ -3,3 +3,4 @@ pytest>=8.0
 PyQt6>=6.6
 PyQt6-WebSockets>=6.6
 pytest-qt>=4.4
+panda3d>=1.10.14

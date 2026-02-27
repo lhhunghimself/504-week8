@@ -108,35 +108,11 @@ class QuestionModel(SQLModel, table=True):
 # ---------------------------------------------------------------------------
 
 HACKER_SEED_QUESTIONS: list[dict[str, Any]] = [
-    # Python fundamentals (framed as exploit/decode challenges)
-    {
-        "id": "hq-python-01",
-        "question_text": (
-            "FIREWALL PROBE: The intrusion scanner counts items in a list "
-            "before deciding whether to trigger the alarm.\n"
-            "  What built-in function returns the number of items in a list?"
-        ),
-        "correct_answer": "len",
-        "category": "python",
-    },
-    {
-        "id": "hq-python-02",
-        "question_text": (
-            "CODE INJECTION: An agent planted a function inside the target's "
-            "runtime. What Python keyword is used to *define* a function?"
-        ),
-        "correct_answer": "def",
-        "category": "python",
-    },
-    {
-        "id": "hq-python-03",
-        "question_text": (
-            "LOOP EXPLOIT: The sentry daemon loops forever unless you know the "
-            "escape sequence. What Python keyword exits a loop immediately?"
-        ),
-        "correct_answer": "break",
-        "category": "python",
-    },
+    # ------------------------------------------------------------------
+    # Python fundamentals — hq-python-01/02/03 removed (duplicated by
+    # gate-specific registry puzzles gate-python-basics-1/2/3).
+    # Replaced with unique questions covering different ground.
+    # ------------------------------------------------------------------
     {
         "id": "hq-python-04",
         "question_text": (
@@ -173,7 +149,58 @@ HACKER_SEED_QUESTIONS: list[dict[str, Any]] = [
         "correct_answer": "return",
         "category": "python",
     },
-    # Security / networking (hacker domain knowledge)
+    {
+        "id": "hq-python-08",
+        "question_text": (
+            "IMPORT INTERCEPT: The loader pulls in an external module at runtime. "
+            "What Python keyword is used to bring a module into scope?"
+        ),
+        "correct_answer": "import",
+        "category": "python",
+    },
+    {
+        "id": "hq-python-09",
+        "question_text": (
+            "CONDITIONAL GATE: The access-control daemon evaluates a condition "
+            "before granting entry. What Python keyword introduces a conditional block?"
+        ),
+        "correct_answer": "if",
+        "category": "python",
+    },
+    # Python data structures
+    {
+        "id": "hq-datastruct-01",
+        "question_text": (
+            "LOOKUP TABLE: The exploit script maps usernames to access tokens "
+            "for O(1) retrieval. What Python data structure provides "
+            "key-to-value mapping?"
+        ),
+        "correct_answer": "dict",
+        "category": "python",
+    },
+    {
+        "id": "hq-datastruct-02",
+        "question_text": (
+            "UNIQUE NODES: The traversal algorithm tracks visited nodes and "
+            "must not revisit any. What Python data structure stores only "
+            "unique values?"
+        ),
+        "correct_answer": "set",
+        "category": "python",
+    },
+    {
+        "id": "hq-datastruct-03",
+        "question_text": (
+            "IMMUTABLE PAYLOAD: The exploit payload is a fixed sequence that "
+            "must not be modified after creation. What Python type is an "
+            "immutable ordered sequence?"
+        ),
+        "correct_answer": "tuple",
+        "category": "python",
+    },
+    # ------------------------------------------------------------------
+    # Security / networking
+    # ------------------------------------------------------------------
     {
         "id": "hq-security-01",
         "question_text": (
@@ -220,36 +247,165 @@ HACKER_SEED_QUESTIONS: list[dict[str, Any]] = [
         "correct_answer": "ping",
         "category": "security",
     },
-    # Python data structures
     {
-        "id": "hq-datastruct-01",
+        "id": "hq-security-06",
         "question_text": (
-            "LOOKUP TABLE: The exploit script maps usernames to access tokens "
-            "for O(1) retrieval. What Python data structure provides "
-            "key-to-value mapping?"
+            "DNS RECON: Your recon script resolves a hostname to an IP address. "
+            "What protocol translates domain names to IP addresses? (3 letters)"
         ),
-        "correct_answer": "dict",
-        "category": "python",
+        "correct_answer": "dns",
+        "category": "security",
     },
     {
-        "id": "hq-datastruct-02",
+        "id": "hq-security-07",
         "question_text": (
-            "UNIQUE NODES: The traversal algorithm tracks visited nodes and "
-            "must not revisit any. What Python data structure stores only "
-            "unique values?"
+            "FIREWALL RULE: The perimeter firewall drops packets based on "
+            "network address blocks. What notation describes an IP range "
+            "with its prefix length, e.g. 192.168.1.0/24? (one word)"
         ),
-        "correct_answer": "set",
-        "category": "python",
+        "correct_answer": "cidr",
+        "category": "security",
+    },
+    # ------------------------------------------------------------------
+    # Output reasoning — "what does this print?" challenges
+    # ------------------------------------------------------------------
+    {
+        "id": "hq-output-01",
+        "question_text": (
+            "OUTPUT TRACE: The log analyser intercepts this snippet:\n"
+            "\n"
+            "    x = 'ACCESS'\n"
+            "    print(x.lower())\n"
+            "\n"
+            "What does this print? (one word, exact)"
+        ),
+        "correct_answer": "access",
+        "category": "output",
     },
     {
-        "id": "hq-datastruct-03",
+        "id": "hq-output-02",
         "question_text": (
-            "IMMUTABLE PAYLOAD: The exploit payload is a fixed sequence that "
-            "must not be modified after creation. What Python type is an "
-            "immutable ordered sequence?"
+            "ARITHMETIC PROBE: The cipher evaluates:\n"
+            "\n"
+            "    print(2 ** 8)\n"
+            "\n"
+            "What does this print? (number)"
         ),
-        "correct_answer": "tuple",
-        "category": "python",
+        "correct_answer": "256",
+        "category": "output",
+    },
+    {
+        "id": "hq-output-03",
+        "question_text": (
+            "BOOLEAN TRAP: The gate logic evaluates:\n"
+            "\n"
+            "    print(10 > 5 and 3 < 2)\n"
+            "\n"
+            "What does this print? (one word)"
+        ),
+        "correct_answer": "false",
+        "category": "output",
+    },
+    {
+        "id": "hq-output-04",
+        "question_text": (
+            "STRING OPERATION: The packet parser runs:\n"
+            "\n"
+            "    parts = 'root:shell:admin'.split(':')\n"
+            "    print(len(parts))\n"
+            "\n"
+            "What does this print? (number)"
+        ),
+        "correct_answer": "3",
+        "category": "output",
+    },
+    {
+        "id": "hq-output-05",
+        "question_text": (
+            "MODULO GATE: The checksum validator computes:\n"
+            "\n"
+            "    print(17 % 5)\n"
+            "\n"
+            "What does this print? (number)"
+        ),
+        "correct_answer": "2",
+        "category": "output",
+    },
+    # ------------------------------------------------------------------
+    # Debugging — "what's wrong?" / traceback challenges
+    # ------------------------------------------------------------------
+    {
+        "id": "hq-debug-01",
+        "question_text": (
+            "CRASH DUMP: The exploit script crashed with:\n"
+            "\n"
+            "    ZeroDivisionError: division by zero\n"
+            "\n"
+            "What type of error is this? (one word, no 'Error' suffix)"
+        ),
+        "correct_answer": "zerodivision",
+        "category": "debugging",
+    },
+    {
+        "id": "hq-debug-02",
+        "question_text": (
+            "KEY MISS: The session handler raised:\n"
+            "\n"
+            "    KeyError: 'token'\n"
+            "\n"
+            "What type of error is this? (one word, no 'Error' suffix)"
+        ),
+        "correct_answer": "key",
+        "category": "debugging",
+    },
+    {
+        "id": "hq-debug-03",
+        "question_text": (
+            "ATTRIBUTE MISS: The object probe raised:\n"
+            "\n"
+            "    AttributeError: 'NoneType' object has no attribute 'split'\n"
+            "\n"
+            "What is the value of the variable that caused this error? (one word)"
+        ),
+        "correct_answer": "none",
+        "category": "debugging",
+    },
+    {
+        "id": "hq-debug-04",
+        "question_text": (
+            "INDENTATION FAULT: The compiler raised:\n"
+            "\n"
+            "    IndentationError: unexpected indent\n"
+            "\n"
+            "What type of error is this? (one word, no 'Error' suffix)"
+        ),
+        "correct_answer": "indentation",
+        "category": "debugging",
+    },
+    {
+        "id": "hq-debug-05",
+        "question_text": (
+            "SYNTAX FAULT: The script failed before running with:\n"
+            "\n"
+            "    SyntaxError: invalid syntax\n"
+            "\n"
+            "At what stage does Python raise a SyntaxError — runtime or "
+            "compile time? (one word)"
+        ),
+        "correct_answer": "compile",
+        "category": "debugging",
+    },
+    {
+        "id": "hq-debug-06",
+        "question_text": (
+            "TYPE FIX: The concatenation probe failed:\n"
+            "\n"
+            "    TypeError: can only concatenate str (not 'int') to str\n"
+            "\n"
+            "What built-in function converts an integer to a string? (one word)"
+        ),
+        "correct_answer": "str",
+        "category": "debugging",
     },
 ]
 

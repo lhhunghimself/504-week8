@@ -212,11 +212,15 @@ Backwards-compatible load defaults (if a key is missing on load):
   - `id: str`
   - `title: str`
   - `prompt: str`
+  - `category: str` — content grouping; values: `"python"`, `"security"`, `"output"`, `"debugging"`. Defaults to `"python"`.
+  - `difficulty: int` — 1 = easy, 2 = medium, 3 = hard. Defaults to `1`.
+  - `hint_answer: str` (optional property) — primary accepted answer exposed for hint generation. Not required by the contract; engines use `getattr(puzzle, "hint_answer", None)`.
   - `check(answer: str, state: dict[str, AnyJSON]) -> bool`
     - Engine passes a JSON-safe view of state (or a lightweight state object internally)
 
 - `PuzzleRegistry`
   - `get(puzzle_id: str) -> Puzzle`
+  - Must return a valid `Puzzle` for any `puzzle_id`, including unknown IDs (via a themed fallback).
 
 ### 5.3 Engine Contract (UI-agnostic)
 

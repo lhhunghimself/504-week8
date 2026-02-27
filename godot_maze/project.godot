@@ -1,0 +1,22 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; but it can also be manually edited.
+
+[application]
+
+config/name="HackTheMaze3D"
+config/description="First-person 3D maze renderer for Hack the Maze (Doom/Duke Nukem style)"
+run/main_scene="res://scenes/main.tscn"
+config/features=PackedStringArray("4.2", "Forward Plus")
+
+[display]
+
+window/size/viewport_width=1024
+window/size/viewport_height=768
+window/stretch/mode="canvas_items"
+
+[rendering]
+
+textures/canvas_textures/default_texture_filter=0
+environment/defaults/default_clear_color=Color(0.02, 0.02, 0.05, 1)
+anti_aliasing/quality/msaa_3d=0

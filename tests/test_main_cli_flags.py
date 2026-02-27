@@ -124,9 +124,23 @@ def test_parse_startup_flags_renderer_godot():
     assert cfg.use_godot is True
 
 
+def test_parse_startup_flags_renderer_pygame():
+    main = _import_main()
+    cfg = main._parse_startup_flags(["--gui", "--renderer", "pygame"])
+    assert cfg.renderer == "pygame"
+    assert cfg.use_godot is False
+
+
+def test_parse_startup_flags_renderer_pygame_with_no_godot():
+    main = _import_main()
+    cfg = main._parse_startup_flags(["--gui", "--renderer", "pygame", "--no-godot"])
+    assert cfg.renderer == "pygame"
+    assert cfg.use_godot is False
+
+
 def test_parse_startup_flags_renderer_invalid():
     main = _import_main()
-    with pytest.raises(ValueError, match="panda3d.*godot"):
+    with pytest.raises(ValueError, match="panda3d.*godot.*pygame"):
         main._parse_startup_flags(["--renderer", "vulkan"])
 
 

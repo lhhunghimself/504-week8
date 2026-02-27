@@ -575,10 +575,10 @@ def _parse_startup_flags(argv: list[str]) -> StartupConfig:
         elif arg == "--renderer":
             i += 1
             if i >= len(argv):
-                raise ValueError("--renderer requires a value (panda3d or godot)")
+                raise ValueError("--renderer requires a value (panda3d, godot, or pygame)")
             val = argv[i].lower()
-            if val not in ("panda3d", "godot"):
-                raise ValueError(f"--renderer must be 'panda3d' or 'godot', got '{val}'")
+            if val not in ("panda3d", "godot", "pygame"):
+                raise ValueError(f"--renderer must be 'panda3d', 'godot', or 'pygame', got '{val}'")
             explicit_renderer = val
         elif arg == "--size":
             i += 1
@@ -659,7 +659,7 @@ def cli_main(argv: list[str] | None = None) -> None:
     except ValueError as e:
         print(e)
         print(
-            "Usage: python main.py [--gui] [--renderer panda3d|godot] "
+            "Usage: python main.py [--gui] [--renderer panda3d|godot|pygame] "
             "[--no-godot] [--size N] [--seed N] [--gates N] [--reset-game]"
         )
         return

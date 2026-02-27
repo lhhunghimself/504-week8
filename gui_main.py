@@ -2,7 +2,7 @@
 
 Contract: interfaces.md §7.4 / §7.5.
 Usage:
-    python gui_main.py [--size N] [--seed N] [--gates N] [--reset-game] [--renderer panda3d|godot]
+    python gui_main.py [--size N] [--seed N] [--gates N] [--reset-game] [--renderer panda3d|godot|pygame]
     python main.py --gui [...]
 """
 from __future__ import annotations
@@ -135,6 +135,8 @@ class MainWindow(QMainWindow):
         self._controller = controller
         self._repo = repo
         self._renderer = renderer
+        self._pygame_viewport: QWidget | None = None
+        self._pygame_embedded = False
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -186,6 +188,19 @@ class MainWindow(QMainWindow):
                 self._canvas = self._create_panda3d_canvas()
                 # The 2D canvas shows the minimap strip; cap its height.
                 self._canvas.setMaximumHeight(200)
+            elif renderer == "pygame":
+                from PyQt6.QtWidgets import QSizePolicy
+                self._viewport_host.setSizePolicy(
+                    QSizePolicy.Policy.Expanding,
+                    QSizePolicy.Policy.Expanding,
+                )
+                self._canvas = self._create_pygame_canvas()
+                if self._pygame_embedded:
+                    self._canvas.setMaximumHeight(200)
+                else:
+                    # Import fallback path: hide empty viewport host and let
+                    # the 2D map use the full left panel.
+                    self._viewport_host.hide()
             elif renderer == "godot":
                 self._godot_placeholder = QLabel(
                     "Waiting for Godot viewport..."
@@ -202,11 +217,14 @@ class MainWindow(QMainWindow):
             left_splitter = QSplitter(Qt.Orientation.Vertical)
             left_splitter.addWidget(self._viewport_host)
             left_splitter.addWidget(self._canvas)
-            if renderer == "panda3d":
-                # 3D view gets ~75% of the space; 2D map strip gets ~25%.
+            if renderer == "panda3d" or (renderer == "pygame" and self._pygame_embedded):
                 left_splitter.setStretchFactor(0, 3)
                 left_splitter.setStretchFactor(1, 1)
                 left_splitter.setSizes([500, 150])
+            elif renderer == "pygame":
+                left_splitter.setStretchFactor(0, 0)
+                left_splitter.setStretchFactor(1, 1)
+                left_splitter.setSizes([0, 650])
             else:
                 left_splitter.setSizes([360, 280])
             left_layout.addWidget(left_splitter)
@@ -243,6 +261,22 @@ class MainWindow(QMainWindow):
         from gui.renderers.panda3d_backend import Panda3DBackend
 
         backend = Panda3DBackend()
+        canvas = MazeCanvas(use_godot=False, backend=backend)
+        return canvas
+
+    def _create_pygame_canvas(self) -> MazeCanvas:
+        """Create a MazeCanvas backed by the Pygame raycaster."""
+        try:
+            from gui.renderers.pygame_backend import PygameBackend, PygameViewport
+        except ImportError:
+            self._pygame_embedded = False
+            log.warning("Pygame not available, falling back to 2D-only mode")
+            return MazeCanvas(use_godot=False)
+
+        backend = PygameBackend()
+        self._pygame_viewport = PygameViewport(backend, self._viewport_host)
+        self._viewport_host_layout.addWidget(self._pygame_viewport)
+        self._pygame_embedded = True
         canvas = MazeCanvas(use_godot=False, backend=backend)
         return canvas
 
@@ -472,15 +506,47 @@ class MainWindow(QMainWindow):
             elif self._renderer == "panda3d":
                 self._ensure_panda3d_started()
                 self._sync_panda3d_viewport()
+            elif self._renderer == "pygame":
+                self._ensure_pygame_started()
+                self._sync_pygame_viewport()
         return super().eventFilter(watched, event)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
-        # Defer to next event-loop tick so the layout engine has a chance to
-        # assign final sizes to child widgets before Panda3D reads them.
-        QTimer.singleShot(0, self._ensure_panda3d_started)
+        if self._renderer == "panda3d":
+            QTimer.singleShot(0, self._ensure_panda3d_started)
+        elif self._renderer == "pygame":
+            QTimer.singleShot(0, self._ensure_pygame_started)
 
     def _sync_panda3d_viewport(self) -> None:
+        if not isinstance(self._canvas, MazeCanvas):
+            return
+        backend = self._canvas._backend
+        if backend is not None and hasattr(backend, "_handle_resize"):
+            backend._handle_resize()
+
+    def _ensure_pygame_started(self) -> None:
+        """Start Pygame backend lazily once the viewport is shown."""
+        if self._renderer != "pygame":
+            return
+        if not self._pygame_embedded:
+            return
+        if not isinstance(self._canvas, MazeCanvas):
+            return
+        viewport = getattr(self, "_pygame_viewport", None)
+        if viewport is None:
+            return
+        backend = self._canvas._backend
+        if backend is None:
+            return
+        if not backend.is_ready():
+            backend.start(viewport)
+        elif hasattr(backend, "_handle_resize"):
+            backend._handle_resize()
+
+    def _sync_pygame_viewport(self) -> None:
+        if not self._pygame_embedded:
+            return
         if not isinstance(self._canvas, MazeCanvas):
             return
         backend = self._canvas._backend
@@ -496,9 +562,9 @@ class MainWindow(QMainWindow):
                 pass
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
-        """Forward key events to the canvas so Panda3D backend receives them."""
+        """Forward key events to the canvas so the 3D backend receives them."""
         if (
-            self._renderer == "panda3d"
+            self._renderer in ("panda3d", "pygame")
             and MazeCanvas is not None
             and isinstance(self._canvas, MazeCanvas)
         ):
@@ -507,9 +573,9 @@ class MainWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event) -> None:  # noqa: N802
-        """Forward key release events to the canvas so Panda3D backend receives them."""
+        """Forward key release events to the canvas so the 3D backend receives them."""
         if (
-            self._renderer == "panda3d"
+            self._renderer in ("panda3d", "pygame")
             and MazeCanvas is not None
             and isinstance(self._canvas, MazeCanvas)
         ):

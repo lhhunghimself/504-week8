@@ -87,3 +87,75 @@ def test_mainwindow_panda3d_viewport_resize_sync(qtbot, monkeypatch):
 
     assert backend.start_calls >= 1
     assert backend.resize_calls >= 1
+
+
+def test_mainwindow_pygame_viewport_resize_sync(qtbot, monkeypatch):
+    """Pygame renderer path must receive viewport resize events."""
+    import gui_main
+
+    monkeypatch.setattr(gui_main, "FormsPanel", None)
+    monkeypatch.setattr(gui_main, "PuzzleDialog", None)
+    monkeypatch.setattr(gui_main, "StatusBar", None)
+    monkeypatch.setattr(gui_main, "ScoreBoard", None)
+    monkeypatch.setattr(gui_main, "MazeCanvas", _FakeCanvas)
+
+    backend = _FakeBackend()
+    _fake_viewport = QWidget()
+
+    def _fake_create_pygame_canvas(self):
+        self._pygame_viewport = _fake_viewport
+        self._pygame_embedded = True
+        return _FakeCanvas(backend)
+
+    monkeypatch.setattr(gui_main.MainWindow, "_create_pygame_canvas", _fake_create_pygame_canvas)
+
+    win = gui_main.MainWindow(
+        _FakeController(),
+        repo=object(),
+        use_godot=False,
+        renderer="pygame",
+    )
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.wait(20)
+
+    host = win._viewport_host
+    assert host is not None
+    host.resize(host.width() + 24, host.height() + 24)
+    qtbot.wait(20)
+
+    assert backend.start_calls >= 1
+    assert backend.resize_calls >= 1
+
+
+def test_mainwindow_pygame_import_fallback_hides_empty_viewport(qtbot, monkeypatch):
+    """When pygame is unavailable, the empty viewport host should be hidden."""
+    import gui_main
+
+    monkeypatch.setattr(gui_main, "FormsPanel", None)
+    monkeypatch.setattr(gui_main, "PuzzleDialog", None)
+    monkeypatch.setattr(gui_main, "StatusBar", None)
+    monkeypatch.setattr(gui_main, "ScoreBoard", None)
+    monkeypatch.setattr(gui_main, "MazeCanvas", _FakeCanvas)
+
+    backend = _FakeBackend()
+
+    def _fake_create_pygame_canvas(self):
+        self._pygame_embedded = False
+        return _FakeCanvas(backend)
+
+    monkeypatch.setattr(gui_main.MainWindow, "_create_pygame_canvas", _fake_create_pygame_canvas)
+
+    win = gui_main.MainWindow(
+        _FakeController(),
+        repo=object(),
+        use_godot=False,
+        renderer="pygame",
+    )
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.wait(20)
+
+    host = win._viewport_host
+    assert host is not None
+    assert host.isHidden()

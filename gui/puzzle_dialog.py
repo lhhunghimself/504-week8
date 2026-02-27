@@ -44,6 +44,11 @@ class PuzzleDialog(QWidget):
         self.submit_button = QPushButton("Submit")
         self.submit_button.clicked.connect(self._submit_answer)
         answer_row.addWidget(self.submit_button)
+
+        self.hint_button = QPushButton("Hint")
+        self.hint_button.clicked.connect(lambda: self.hint_requested.emit(""))
+        answer_row.addWidget(self.hint_button)
+
         puzzle_layout.addLayout(answer_row)
 
         self._hint_area = QWidget()
@@ -76,6 +81,7 @@ class PuzzleDialog(QWidget):
         self.answer_input.clear()
         self._hint_result_label.clear()
         self._clear_hint_buttons()
+        self.hint_button.setVisible(True)
         self.puzzle_area.show()
 
     def show_hint_options(self, options: list[dict]) -> None:

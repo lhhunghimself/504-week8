@@ -328,10 +328,10 @@ class GameEngine:
                     hint_options=None,
                 )
 
-            hint_type = args[0].strip().lower() if args else None
+            hint_type = args[0].strip().lower() if args else ""
 
             # Step 1: no type given — return available options for the UI to display
-            if hint_type is None:
+            if hint_type == "":
                 return GameOutput(
                     view=self._make_view(),
                     messages=["Choose a hint type:"],

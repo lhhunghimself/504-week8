@@ -855,6 +855,24 @@ def test_hint_persist_semantics(maze_module, repo, puzzle_registry):
 
 
 # ---------------------------------------------------------------------------
+# C.23b  hint with empty/blank arg behaves like bare hint
+# ---------------------------------------------------------------------------
+
+def test_hint_blank_arg_returns_options(maze_module, repo, puzzle_registry):
+    engine, cmd_cls, maze, _, _ = _make_engine(maze_module, repo, puzzle_registry)
+
+    gate_out = _trigger_pending_puzzle(engine, cmd_cls, maze)
+    assert gate_out is not None, "Minimal maze must have at least one gate"
+
+    for raw in ("", "   "):
+        out = engine.handle(cmd_cls(verb="hint", args=[raw]))
+        hint_options = out.hint_options if hasattr(out, "hint_options") else out.get("hint_options")
+        assert out.did_persist is False, "blank hint arg should not persist"
+        assert hint_options is not None and len(hint_options) > 0, \
+            "blank hint arg must return hint options like bare hint"
+
+
+# ---------------------------------------------------------------------------
 # C.24  progressive reveal increases chars and resets after solve
 #       Uses a deterministic 2-gate 5x5 maze so reset is always exercised.
 # ---------------------------------------------------------------------------

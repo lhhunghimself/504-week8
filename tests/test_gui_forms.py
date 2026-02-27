@@ -142,6 +142,22 @@ def test_hint_button_emits_hint_command(qtbot, dummy_hint_options):
 
 
 # ---------------------------------------------------------------------------
+# E.4b — Primary hint button emits empty string to request options
+# ---------------------------------------------------------------------------
+
+def test_hint_button_requests_options(qtbot, dummy_pending_puzzle):
+    from gui.puzzle_dialog import PuzzleDialog
+
+    dialog = PuzzleDialog()
+    qtbot.addWidget(dialog)
+    dialog.show_puzzle(dummy_pending_puzzle)
+
+    with qtbot.waitSignal(dialog.hint_requested, timeout=1000) as sig:
+        qtbot.mouseClick(dialog.hint_button, pytest.importorskip("PyQt6.QtCore").Qt.MouseButton.LeftButton)
+    assert sig.args == [""]
+
+
+# ---------------------------------------------------------------------------
 # E.5 — Movement buttons disabled when unavailable
 # ---------------------------------------------------------------------------
 
@@ -217,6 +233,42 @@ def test_score_board_renders_rows(qtbot, dummy_score_rows):
     board.show_scores(dummy_score_rows)
 
     assert board.table.rowCount() == 2
+
+
+# ---------------------------------------------------------------------------
+# E.9b — Score board renders correct cell content
+# ---------------------------------------------------------------------------
+
+def test_score_board_renders_cell_content(qtbot, dummy_score_rows):
+    from gui.score_board import ScoreBoard
+
+    board = ScoreBoard()
+    qtbot.addWidget(board)
+    board.show_scores(dummy_score_rows)
+
+    assert board.table.item(0, 0).text() == "neo"
+    assert board.table.item(0, 1).text() == "42"
+    assert board.table.item(0, 2).text() == "5"
+    assert board.table.item(0, 3).text() == "0"
+    assert board.table.item(1, 0).text() == "trinity"
+
+
+# ---------------------------------------------------------------------------
+# E.9c — Score board falls back to player_id when player_handle is absent
+# ---------------------------------------------------------------------------
+
+def test_score_board_falls_back_to_player_id(qtbot):
+    from gui.score_board import ScoreBoard
+
+    repo_shaped = [
+        {"player_id": "abc-123", "metrics": {"elapsed_seconds": 10, "moves": 3, "hints_used": 1}},
+    ]
+    board = ScoreBoard()
+    qtbot.addWidget(board)
+    board.show_scores(repo_shaped)
+
+    assert board.table.rowCount() == 1
+    assert board.table.item(0, 0).text() == "abc-123"
 
 
 # ---------------------------------------------------------------------------

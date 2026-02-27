@@ -21,7 +21,7 @@ class ScoreBoard(QWidget):
     def show_scores(self, scores: list[dict]) -> None:
         self.table.setRowCount(len(scores))
         for row, score in enumerate(scores):
-            handle = score.get("player_handle", "—")
+            handle = score.get("player_handle") or score.get("player_id", "—")
             metrics = score.get("metrics", {})
             self.table.setItem(row, 0, QTableWidgetItem(str(handle)))
             self.table.setItem(row, 1, QTableWidgetItem(str(metrics.get("elapsed_seconds", "—"))))

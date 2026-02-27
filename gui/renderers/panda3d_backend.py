@@ -70,6 +70,12 @@ class Panda3DBackend(BaseBackend):
         self._is_moving = False
 
         self._key_map: dict[str, bool] = {}
+        self._minimap_root = None
+        self._minimap_cells: dict[tuple[int, int], object] = {}
+        self._minimap_player = None
+        self._minimap_arrow = None
+        self._snapshot_width = 0
+        self._snapshot_height = 0
 
     # -- BaseBackend --------------------------------------------------------
 
@@ -138,6 +144,7 @@ class Panda3DBackend(BaseBackend):
         if self._player_node is not None:
             x, y = self._cell_center(row, col)
             self._player_node.setPos(x, y, EYE_HEIGHT)
+        self._update_minimap_player()
 
     def send_view_direction(self, direction: str) -> None:
         d = (direction or "").strip().upper()
@@ -194,6 +201,7 @@ class Panda3DBackend(BaseBackend):
             if new_facing != self._facing_str:
                 self._facing_str = new_facing
                 self._emit_facing(new_facing)
+            self._update_minimap_player()
         elif action == "turn_right":
             self._facing_h = (self._facing_h + 90) % 360
             new_facing = _facing_for_heading(self._facing_h)
@@ -202,6 +210,7 @@ class Panda3DBackend(BaseBackend):
             if new_facing != self._facing_str:
                 self._facing_str = new_facing
                 self._emit_facing(new_facing)
+            self._update_minimap_player()
         elif action == "forward":
             self._emit_direction(self._facing_str)
         elif action == "backward":
@@ -244,6 +253,10 @@ class Panda3DBackend(BaseBackend):
         self._base.cam.setPos(0, 0, 0)
         self._base.cam.setH(self._facing_h)
         self._base.cam.setP(0)
+
+        self._snapshot_width = width
+        self._snapshot_height = height
+        self._rebuild_minimap(snapshot)
 
     def _cell_center(self, row: int, col: int) -> tuple[float, float]:
         x = col * CELL_SIZE + CELL_SIZE / 2
@@ -347,6 +360,139 @@ class Panda3DBackend(BaseBackend):
         marker.setPos(x, y, z)
         marker.setScale(scale)
         marker.setColor(LVector4(*color))
+
+    # -- Minimap overlay (2D HUD) -------------------------------------------
+
+    def _rebuild_minimap(self, snapshot: dict) -> None:
+        """Build a 2D minimap overlay in the top-right corner of the viewport."""
+        if self._base is None:
+            return
+        from panda3d.core import CardMaker, LVector4, TextNode
+
+        if self._minimap_root is not None:
+            self._minimap_root.removeNode()
+        self._minimap_cells.clear()
+
+        self._minimap_root = self._base.aspect2d.attachNewNode("minimap")
+
+        width = snapshot.get("width", 0)
+        height = snapshot.get("height", 0)
+        cells = snapshot.get("cells", [])
+        if width == 0 or height == 0:
+            return
+
+        cell_sz = min(0.08, 0.4 / max(width, height))
+        gap = cell_sz * 0.1
+        total_w = width * (cell_sz + gap) - gap
+        total_h = height * (cell_sz + gap) - gap
+
+        anchor_x = self._base.getAspectRatio() - total_w - 0.05
+        anchor_y = 1.0 - 0.05
+
+        bg_cm = CardMaker("minimap_bg")
+        pad = cell_sz * 0.3
+        bg_cm.setFrame(-pad, total_w + pad, -(total_h + pad), pad)
+        bg_node = self._minimap_root.attachNewNode(bg_cm.generate())
+        bg_node.setPos(anchor_x, 0, anchor_y)
+        bg_node.setColor(LVector4(0.0, 0.0, 0.0, 0.6))
+        bg_node.setTransparency(1)
+
+        for cell in cells:
+            row, col = cell["row"], cell["col"]
+            x = anchor_x + col * (cell_sz + gap)
+            z = anchor_y - row * (cell_sz + gap)
+
+            cm = CardMaker(f"mm_{row}_{col}")
+            cm.setFrame(0, cell_sz, -cell_sz, 0)
+            node = self._minimap_root.attachNewNode(cm.generate())
+            node.setPos(x, 0, z)
+
+            color = self._minimap_cell_color(cell)
+            node.setColor(LVector4(*color))
+            self._minimap_cells[(row, col)] = node
+
+            conns = set(cell.get("connections", []))
+            if cell.get("visible"):
+                self._draw_minimap_connections(conns, x, z, cell_sz, gap)
+
+        self._update_minimap_player()
+
+    def _minimap_cell_color(self, cell: dict) -> tuple:
+        if not cell.get("visible", False):
+            return (0.10, 0.10, 0.18, 0.8)
+        if cell.get("is_player"):
+            return (0.91, 0.27, 0.37, 1.0)
+        if cell.get("has_gate") and not cell.get("solved"):
+            return _GATE_COLOR
+        if cell.get("has_gate") and cell.get("solved"):
+            return _GATE_SOLVED_COLOR
+        kind = cell.get("kind", "normal")
+        if kind == "start":
+            return (0.06, 0.2, 0.37, 1.0)
+        if kind == "exit":
+            return (0.32, 0.2, 0.51, 1.0)
+        return (0.09, 0.13, 0.24, 1.0)
+
+    def _draw_minimap_connections(
+        self, conns: set, x: float, z: float, cell_sz: float, gap: float,
+    ) -> None:
+        from panda3d.core import CardMaker, LVector4
+
+        conn_color = LVector4(0.0, 1.0, 0.25, 0.7)
+        line_w = cell_sz * 0.15
+
+        for d in conns:
+            cm = CardMaker("conn")
+            if d == "E":
+                cm.setFrame(cell_sz, cell_sz + gap, -cell_sz / 2 - line_w / 2, -cell_sz / 2 + line_w / 2)
+            elif d == "S":
+                cm.setFrame(cell_sz / 2 - line_w / 2, cell_sz / 2 + line_w / 2, -cell_sz - gap, -cell_sz)
+            else:
+                continue
+            node = self._minimap_root.attachNewNode(cm.generate())
+            node.setPos(x, 0, z)
+            node.setColor(conn_color)
+            node.setTransparency(1)
+
+    def _update_minimap_player(self) -> None:
+        """Refresh the player arrow indicator on the minimap."""
+        if self._minimap_root is None or self._base is None:
+            return
+        from panda3d.core import CardMaker, LVector4
+
+        if self._minimap_arrow is not None:
+            self._minimap_arrow.removeNode()
+            self._minimap_arrow = None
+
+        cell_node = self._minimap_cells.get((self._player_row, self._player_col))
+        if cell_node is None:
+            return
+
+        width = self._snapshot_width
+        height = self._snapshot_height
+        if width == 0 or height == 0:
+            return
+
+        cell_sz = min(0.08, 0.4 / max(width, height))
+
+        arrow = self._minimap_root.attachNewNode("mm_arrow")
+        cm = CardMaker("arrow_body")
+        half = cell_sz * 0.15
+        length = cell_sz * 0.35
+
+        facing_offsets = {
+            "N": (0, length), "S": (0, -length), "E": (length, 0), "W": (-length, 0),
+        }
+        dx, dz = facing_offsets.get(self._facing_str, (0, 0))
+
+        cm.setFrame(-half, half, -half, half)
+        dot = arrow.attachNewNode(cm.generate())
+        x = cell_node.getX() + cell_sz / 2 + dx
+        z = cell_node.getZ() - cell_sz / 2 + dz
+        dot.setPos(x, 0, z)
+        dot.setColor(LVector4(1.0, 1.0, 1.0, 1.0))
+
+        self._minimap_arrow = arrow
 
     # -- Render loop --------------------------------------------------------
 

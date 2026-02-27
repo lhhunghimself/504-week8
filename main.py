@@ -496,12 +496,48 @@ def _parse_input(raw: str) -> Command:
     return Command(verb=tokens[0], args=tokens[1:])
 
 
-def _parse_startup_flags(argv: list[str]) -> bool:
-    """Parse CLI startup flags. Returns whether question bank reset was requested."""
-    unknown = [arg for arg in argv if arg != "--reset-game"]
-    if unknown:
-        raise ValueError(f"Unknown argument(s): {' '.join(unknown)}")
-    return "--reset-game" in argv
+@dataclass
+class StartupConfig:
+    """Parsed CLI startup flags."""
+    reset_game: bool = False
+    maze_size: int = 3
+    maze_seed: int = 0
+    num_gates: int = 1
+
+
+def _parse_startup_flags(argv: list[str]) -> StartupConfig:
+    """Parse CLI startup flags into a StartupConfig."""
+    config = StartupConfig()
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--reset-game":
+            config.reset_game = True
+        elif arg == "--size":
+            i += 1
+            if i >= len(argv):
+                raise ValueError("--size requires a value")
+            val = int(argv[i])
+            if val < 3:
+                raise ValueError("--size must be at least 3")
+            config.maze_size = val
+        elif arg == "--seed":
+            i += 1
+            if i >= len(argv):
+                raise ValueError("--seed requires a value")
+            config.maze_seed = int(argv[i])
+        elif arg == "--gates":
+            i += 1
+            if i >= len(argv):
+                raise ValueError("--gates requires a value")
+            val = int(argv[i])
+            if val < 1:
+                raise ValueError("--gates must be at least 1")
+            config.num_gates = val
+        else:
+            raise ValueError(f"Unknown argument(s): {arg}")
+        i += 1
+    return config
 
 
 def _initialize_question_bank(
@@ -516,22 +552,34 @@ def _initialize_question_bank(
         repo.reset_questions()
 
 
+def _build_maze(config: StartupConfig) -> Any:
+    """Build a maze based on startup configuration."""
+    from maze import build_minimal_3x3_maze, build_square_maze
+
+    if config.maze_size == 3 and config.maze_seed == 0 and config.num_gates == 1:
+        return build_minimal_3x3_maze()
+    return build_square_maze(
+        size=config.maze_size,
+        seed=config.maze_seed,
+        num_gates=config.num_gates,
+    )
+
+
 def cli_main(argv: list[str] | None = None) -> None:
     """Interactive CLI entry point for the quiz maze game."""
     from pathlib import Path
     import sys
 
     from db import HACKER_SEED_QUESTIONS, open_repo
-    from maze import build_minimal_3x3_maze
     from puzzles import PuzzleRegistry
 
     if argv is None:
         argv = sys.argv[1:]
     try:
-        reset_game = _parse_startup_flags(argv)
+        config = _parse_startup_flags(argv)
     except ValueError as e:
         print(e)
-        print("Usage: python main.py [--reset-game]")
+        print("Usage: python main.py [--size N] [--seed N] [--gates N] [--reset-game]")
         return
 
     print("=" * 50)
@@ -541,12 +589,15 @@ def cli_main(argv: list[str] | None = None) -> None:
 
     save_path = Path("game_save.db")
     repo = open_repo(save_path)
-    _initialize_question_bank(repo, HACKER_SEED_QUESTIONS, reset_game=reset_game)
-    if reset_game:
+    _initialize_question_bank(repo, HACKER_SEED_QUESTIONS, reset_game=config.reset_game)
+    if config.reset_game:
         print("Question bank reset: all questions marked unasked.")
 
-    maze = build_minimal_3x3_maze()
+    maze = _build_maze(config)
     puzzles = PuzzleRegistry()
+
+    if config.maze_size != 3 or config.maze_seed != 0 or config.num_gates != 1:
+        print(f"Maze: {maze.width}x{maze.height}, seed={config.maze_seed}, gates={config.num_gates}")
 
     handle = input("Enter your hacker handle: ").strip() or "anonymous"
     player = repo.get_or_create_player(handle)
@@ -559,9 +610,9 @@ def cli_main(argv: list[str] | None = None) -> None:
         "started_at": _utc_now_iso(),
         "visited": [{"row": maze.start.row, "col": maze.start.col}],
         "hints_used": 0,
-        "maze_size": maze.width,
-        "num_gates": 1,
-        "maze_seed": 0,
+        "maze_size": config.maze_size,
+        "num_gates": config.num_gates,
+        "maze_seed": config.maze_seed,
     }
     game = repo.create_game(
         player_id=player_id,

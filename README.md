@@ -25,6 +25,28 @@ python main.py
 
 On first launch you will be prompted for a hacker handle. Progress is saved automatically to `game_save.db` in the current directory. Each subsequent launch resumes where you left off — including which questions you have already been asked.
 
+### Custom Maze Size
+
+Generate larger mazes with more gates using CLI flags:
+
+```bash
+python main.py --size 7 --seed 42 --gates 3
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--size N` | `3` | Width/height of the square maze (minimum 3) |
+| `--seed N` | `0` | Random seed for procedural generation (0 = default) |
+| `--gates N` | `1` | Number of puzzle gates placed along the path (minimum 1) |
+
+When `--size 3 --seed 0 --gates 1` (all defaults), the hand-authored 3x3 maze is used. Any non-default value triggers procedural generation via `build_square_maze`. The same seed always produces the same maze layout.
+
+Flags can be combined freely:
+
+```bash
+python main.py --size 5 --gates 2 --reset-game
+```
+
 ### Reset the question bank
 
 To mark all questions as unasked again (e.g. start a fresh challenge with the same player record):
@@ -39,7 +61,7 @@ python main.py --reset-game
 
 ### Objective
 
-You start at the **Ingress Port** (top-left of a 3×3 network grid). Reach the **Root Access Gateway** (bottom-right) to win. Your score is based on elapsed time, number of moves, and hints used.
+You start at the **Ingress Port** (top-left of the network grid). Reach the **Root Access Gateway** (bottom-right) to win. The default maze is 3x3, but you can generate larger grids with `--size`. Your score is based on elapsed time, number of moves, and hints used.
 
 ### The Map
 
@@ -151,7 +173,7 @@ Scores are sorted by lowest `elapsed_seconds` then lowest `moves`. Use `scores` 
 | `db.py` | SQLite persistence via SQLModel |
 | `puzzles.py` | Puzzle registry (16 gate-specific puzzles + fallback) |
 | `interfaces.md` | Module contracts (stable API between all three modules) |
-| `tests/` | 88 unit and integration tests |
+| `tests/` | 100 unit and integration tests |
 
 ---
 
@@ -161,7 +183,7 @@ Scores are sorted by lowest `elapsed_seconds` then lowest `moves`. Use `scores` 
 python -m pytest -q
 ```
 
-All 88 tests should pass.
+All 100 tests should pass.
 
 ---
 
@@ -171,4 +193,5 @@ All 88 tests should pass.
 - The engine is **UI-agnostic**: `GameEngine.handle(Command)` returns a `GameOutput` dataclass. The CLI is one adapter; a future PyQt UI would be another.
 - Persistence uses **SQLite via SQLModel**. Game state, scores, and the question bank are all stored in `game_save.db`.
 - Fog of war is tracked via a `visited` set in persisted game state — no maze logic changes required.
+- Maze generation is deterministic given a seed. `build_square_maze(size, seed, num_gates)` uses a seeded RNG to carve a spanning tree and place gates on the solution path.
 - The question bank deduplicates on restart: reseeding refreshes question text but preserves `has_been_asked` flags. Pass `--reset-game` to clear them.

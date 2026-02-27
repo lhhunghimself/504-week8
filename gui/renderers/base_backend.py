@@ -52,6 +52,16 @@ class BaseBackend:
         """Set the camera/view facing direction (N/S/E/W)."""
         raise NotImplementedError
 
+    # -- Input injection (for embedded backends that can't capture OS focus) --
+
+    def inject_key(self, panda_key: str, *, pressed: bool) -> None:
+        """Inject a key press/release by name (e.g. 'w', 'arrow_left').
+
+        Called by MazeCanvas.keyPressEvent/keyReleaseEvent to forward Qt key
+        events to the embedded renderer when the renderer window cannot receive
+        direct OS keyboard focus.  The default no-ops; Panda3DBackend overrides.
+        """
+
     # -- Event callbacks ----------------------------------------------------
 
     def on_direction(self, callback: Callable[[str], None]) -> None:

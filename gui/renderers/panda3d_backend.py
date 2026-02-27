@@ -21,12 +21,18 @@ log = logging.getLogger(__name__)
 
 CELL_SIZE = 4.0
 WALL_HEIGHT = 3.0
-WALL_THICKNESS = 0.15
 EYE_HEIGHT = 1.6
 FPS_INTERVAL_MS = 16
 
-_FACING_TO_H = {"N": 0.0, "E": 90.0, "S": 180.0, "W": 270.0}
-_H_TO_FACING = {0: "N", 90: "E", 180: "S", 270: "W"}
+# Panda3D heading (H) uses +Y as forward (0°) and positive heading rotates left:
+#   H=0   → +Y
+#   H=90  → -X
+#   H=180 → -Y
+#   H=270 → +X
+# Our maze uses:
+#   N → +Y, E → +X, S → -Y, W → -X
+_FACING_TO_H = {"N": 0.0, "E": 270.0, "S": 180.0, "W": 90.0}
+_H_TO_FACING = {0: "N", 90: "W", 180: "S", 270: "E"}
 
 _KIND_COLORS = {
     "start": (0.06, 0.2, 0.37, 1),
@@ -36,9 +42,76 @@ _KIND_COLORS = {
 _FOG_COLOR = (0.10, 0.10, 0.18, 1)
 _GATE_COLOR = (0.96, 0.65, 0.14, 1)
 _GATE_SOLVED_COLOR = (0.33, 0.75, 0.42, 1)
-_WALL_COLOR = (0.25, 0.25, 0.35, 1)
+_WALL_COLOR = (0.85, 0.82, 1.0, 1)   # light tint: texture provides dark tones
 _FLOOR_COLOR = (0.09, 0.13, 0.24, 1)
-_CEILING_COLOR = (0.05, 0.05, 0.10, 1)
+_CEILING_COLOR = (0.55, 0.40, 0.70, 1)  # visible ceiling tint
+
+
+def _make_brick_texture(size: int = 128):
+    """Generate a tileable stone-brick texture procedurally."""
+    from panda3d.core import PNMImage, Texture
+    img = PNMImage(size, size)
+    bw = size // 4
+    bh = size // 8
+    mortar = max(2, size // 40)
+    for y in range(size):
+        row = y // bh
+        offset = (bw // 2) * (row % 2)
+        for x in range(size):
+            bx = (x + offset) % size
+            in_mortar_x = (bx % bw) < mortar
+            in_mortar_y = (y % bh) < mortar
+            if in_mortar_x or in_mortar_y:
+                img.setXelA(x, y, 0.42, 0.39, 0.50, 1.0)
+            else:
+                noise = (((x * 7 + y * 13) ^ (x * 3)) % 31) / 31.0 * 0.18
+                img.setXelA(x, y, 0.62 + noise, 0.57 + noise, 0.72 + noise, 1.0)
+    tex = Texture("wall_brick")
+    tex.load(img)
+    tex.setWrapU(Texture.WM_repeat)
+    tex.setWrapV(Texture.WM_repeat)
+    tex.setMagfilter(Texture.FT_linear)
+    tex.setMinfilter(Texture.FT_linear_mipmap_linear)
+    return tex
+
+
+def _make_floor_texture(size: int = 128):
+    """Generate a tileable stone-tile floor texture procedurally."""
+    from panda3d.core import PNMImage, Texture
+    img = PNMImage(size, size)
+    tile = size // 4
+    grout = max(2, size // 32)
+    for y in range(size):
+        for x in range(size):
+            if (x % tile) < grout or (y % tile) < grout:
+                img.setXelA(x, y, 0.06, 0.08, 0.14, 1.0)
+            else:
+                noise = (((x * 5 + y * 11) ^ y) % 23) / 23.0 * 0.06
+                img.setXelA(x, y, 0.11 + noise, 0.16 + noise, 0.28 + noise, 1.0)
+    tex = Texture("floor_tile")
+    tex.load(img)
+    tex.setWrapU(Texture.WM_repeat)
+    tex.setWrapV(Texture.WM_repeat)
+    tex.setMagfilter(Texture.FT_linear)
+    tex.setMinfilter(Texture.FT_linear_mipmap_linear)
+    return tex
+
+
+def _make_ceiling_texture(size: int = 64):
+    """Generate a plain dark stone ceiling texture."""
+    from panda3d.core import PNMImage, Texture
+    img = PNMImage(size, size)
+    for y in range(size):
+        for x in range(size):
+            noise = (((x * 3 + y * 7) ^ x) % 19) / 19.0 * 0.04
+            img.setXelA(x, y, 0.08 + noise, 0.06 + noise, 0.12 + noise, 1.0)
+    tex = Texture("ceiling_stone")
+    tex.load(img)
+    tex.setWrapU(Texture.WM_repeat)
+    tex.setWrapV(Texture.WM_repeat)
+    tex.setMagfilter(Texture.FT_linear)
+    tex.setMinfilter(Texture.FT_linear_mipmap_linear)
+    return tex
 
 
 def _heading_for_facing(facing: str) -> float:
@@ -77,6 +150,12 @@ class Panda3DBackend(BaseBackend):
         self._snapshot_width = 0
         self._snapshot_height = 0
 
+        # Procedural textures — generated once after Panda3D starts.
+        self._tex_wall = None
+        self._tex_floor = None
+        self._tex_ceiling = None
+        self._player_light = None
+
     # -- BaseBackend --------------------------------------------------------
 
     def start(self, parent_widget: QWidget) -> None:
@@ -93,22 +172,39 @@ class Panda3DBackend(BaseBackend):
 
             self._base = ShowBase(windowType="none")
 
+            pix_w, pix_h, dpr = self._host_pixel_size(parent_widget)
             props = WindowProperties()
             props.setParentWindow(int(parent_widget.winId()))
-            props.setSize(parent_widget.width(), parent_widget.height())
+            # Qt widget sizes are in device-independent pixels; Panda3D expects
+            # physical pixels when embedding into a native X11 window.
+            props.setSize(pix_w, pix_h)
             props.setOrigin(0, 0)
             self._base.openDefaultWindow(props=props)
 
+            # Dark background matching the maze ceiling/fog color.
+            self._base.win.setClearColor((0.06, 0.05, 0.10, 1))
+
+            self._base.camLens.setFov(75)
             self._setup_lighting()
             self._setup_input()
+            self._setup_textures()
 
             self._timer = QTimer()
             self._timer.timeout.connect(self._step)
             self._timer.start(FPS_INTERVAL_MS)
 
             self._started = True
-            log.info("Panda3D backend started (size=%dx%d)",
-                     parent_widget.width(), parent_widget.height())
+            # If snapshots arrived before start(), render immediately after boot.
+            if self._current_snapshot:
+                self._rebuild_scene(self._current_snapshot)
+            log.info(
+                "Panda3D backend started (logical=%dx%d px=%dx%d dpr=%.2f)",
+                parent_widget.width(),
+                parent_widget.height(),
+                pix_w,
+                pix_h,
+                dpr,
+            )
 
         except Exception:
             log.exception("Failed to start Panda3D backend")
@@ -120,17 +216,40 @@ class Panda3DBackend(BaseBackend):
             self._timer = None
         if self._base is not None:
             try:
+                # Close the graphics window before destroying ShowBase to avoid
+                # GLXBadDrawable errors on X11 when the parent Qt widget is
+                # already unmapped during application shutdown.
+                if self._base.win is not None:
+                    self._base.win.setActive(False)
+                    try:
+                        self._base.graphicsEngine.removeWindow(self._base.win)
+                    except Exception:
+                        pass
                 self._base.destroy()
             except Exception:
-                log.exception("Error destroying Panda3D")
+                log.debug("Error destroying Panda3D (expected on some X11 configs)")
             self._base = None
         self._started = False
         self._maze_root = None
         self._player_node = None
+        self._tex_wall = None
+        self._tex_floor = None
+        self._tex_ceiling = None
         log.info("Panda3D backend stopped")
 
     def is_ready(self) -> bool:
         return self._started and self._base is not None
+
+    def _host_pixel_size(self, widget: QWidget) -> tuple[int, int, float]:
+        """Return (pixel_w, pixel_h, dpr) for a Qt widget."""
+        dpr = 1.0
+        try:
+            dpr = float(widget.devicePixelRatioF())
+        except Exception:
+            dpr = 1.0
+        w = max(1, int(round(widget.width() * dpr)))
+        h = max(1, int(round(widget.height() * dpr)))
+        return w, h, dpr
 
     def send_maze_update(self, snapshot_dict: dict) -> None:
         self._current_snapshot = snapshot_dict
@@ -146,6 +265,13 @@ class Panda3DBackend(BaseBackend):
             self._player_node.setPos(x, y, EYE_HEIGHT)
         self._update_minimap_player()
 
+    def inject_key(self, panda_key: str, *, pressed: bool) -> None:
+        """Forward a Qt key event into Panda3D's messenger by key name."""
+        if self._base is None:
+            return
+        event_name = panda_key if pressed else f"{panda_key}-up"
+        self._base.messenger.send(event_name, [])
+
     def send_view_direction(self, direction: str) -> None:
         d = (direction or "").strip().upper()
         if d in _FACING_TO_H:
@@ -153,27 +279,26 @@ class Panda3DBackend(BaseBackend):
             self._facing_str = d
             if self._base is not None:
                 self._base.cam.setH(self._facing_h)
+            self._update_minimap_player()
 
     # -- Scene construction -------------------------------------------------
 
     def _setup_lighting(self) -> None:
-        from panda3d.core import AmbientLight, DirectionalLight, LVector4
+        from panda3d.core import AmbientLight, PointLight, LVector4, LPoint3f, LColor
 
+        # Moderate ambient so distant walls aren't pitch black.
         ambient = AmbientLight("ambient")
-        ambient.setColor(LVector4(0.35, 0.35, 0.4, 1))
+        ambient.setColor(LVector4(0.25, 0.22, 0.30, 1))
         self._base.render.setLight(self._base.render.attachNewNode(ambient))
 
-        sun = DirectionalLight("sun")
-        sun.setColor(LVector4(0.7, 0.7, 0.65, 1))
-        sun_np = self._base.render.attachNewNode(sun)
-        sun_np.setHpr(45, -60, 0)
-        self._base.render.setLight(sun_np)
-
-        fill = DirectionalLight("fill")
-        fill.setColor(LVector4(0.3, 0.3, 0.35, 1))
-        fill_np = self._base.render.attachNewNode(fill)
-        fill_np.setHpr(-135, -30, 0)
-        self._base.render.setLight(fill_np)
+        # Player-attached point light: illuminates nearby walls like a torch.
+        # Intensity 2.5, gentle falloff so walls 2-8 units away are well-lit.
+        self._player_light = PointLight("player_light")
+        self._player_light.setColor(LColor(2.5, 2.4, 2.2, 1))
+        self._player_light.setAttenuation((0.3, 0.0, 0.003))
+        player_light_np = self._base.cam.attachNewNode(self._player_light)
+        player_light_np.setPos(0, 0, 0)
+        self._base.render.setLight(player_light_np)
 
     def _setup_input(self) -> None:
         for key, action in [
@@ -181,10 +306,24 @@ class Panda3DBackend(BaseBackend):
             ("s", "backward"), ("arrow_down", "backward"),
             ("q", "turn_left"), ("a", "turn_left"),
             ("e", "turn_right"), ("d", "turn_right"),
+            ("arrow_left", "turn_left"), ("arrow_right", "turn_right"),
         ]:
             self._key_map[action] = False
             self._base.accept(key, self._set_key, [action, True])
             self._base.accept(f"{key}-up", self._set_key, [action, False])
+
+    def _setup_textures(self) -> None:
+        """Generate procedural wall/floor/ceiling textures once after startup."""
+        try:
+            self._tex_wall = _make_brick_texture()
+            self._tex_floor = _make_floor_texture()
+            self._tex_ceiling = _make_ceiling_texture()
+            log.debug("Procedural textures generated")
+        except Exception:
+            log.warning("Texture generation failed, falling back to flat shading")
+            self._tex_wall = None
+            self._tex_floor = None
+            self._tex_ceiling = None
 
     def _set_key(self, action: str, value: bool) -> None:
         was = self._key_map.get(action, False)
@@ -194,7 +333,7 @@ class Panda3DBackend(BaseBackend):
 
     def _handle_key_press(self, action: str) -> None:
         if action == "turn_left":
-            self._facing_h = (self._facing_h - 90) % 360
+            self._facing_h = (self._facing_h + 90) % 360
             new_facing = _facing_for_heading(self._facing_h)
             if self._base is not None:
                 self._base.cam.setH(self._facing_h)
@@ -203,7 +342,7 @@ class Panda3DBackend(BaseBackend):
                 self._emit_facing(new_facing)
             self._update_minimap_player()
         elif action == "turn_right":
-            self._facing_h = (self._facing_h + 90) % 360
+            self._facing_h = (self._facing_h - 90) % 360
             new_facing = _facing_for_heading(self._facing_h)
             if self._base is not None:
                 self._base.cam.setH(self._facing_h)
@@ -264,11 +403,12 @@ class Panda3DBackend(BaseBackend):
         return x, y
 
     def _build_cell_floor(self, cell: dict, row: int, col: int) -> None:
-        from panda3d.core import CardMaker, LVector4
+        from panda3d.core import CardMaker, LVector4, Point2
 
         cm = CardMaker(f"floor_{row}_{col}")
         half = CELL_SIZE / 2
         cm.setFrame(-half, half, -half, half)
+        cm.setUvRange(Point2(0, 0), Point2(1, 1))
 
         cx, cy = self._cell_center(row, col)
         node = self._maze_root.attachNewNode(cm.generate())
@@ -277,28 +417,40 @@ class Panda3DBackend(BaseBackend):
 
         if not cell.get("visible", False):
             color = _FOG_COLOR
+            node.setColor(LVector4(*color))
         elif cell.get("has_gate") and not cell.get("solved"):
             color = _GATE_COLOR
+            node.setColor(LVector4(*color))
         elif cell.get("has_gate") and cell.get("solved"):
             color = _GATE_SOLVED_COLOR
+            node.setColor(LVector4(*color))
         else:
             kind = cell.get("kind", "normal")
-            color = _KIND_COLORS.get(kind, _FLOOR_COLOR)
-
-        node.setColor(LVector4(*color))
+            tint = _KIND_COLORS.get(kind, _FLOOR_COLOR)
+            if self._tex_floor is not None:
+                node.setTexture(self._tex_floor)
+                node.setColorScale(LVector4(*tint))
+            else:
+                node.setColor(LVector4(*tint))
 
     def _build_cell_ceiling(self, row: int, col: int) -> None:
-        from panda3d.core import CardMaker, LVector4
+        from panda3d.core import CardMaker, LVector4, Point2
 
         cm = CardMaker(f"ceil_{row}_{col}")
         half = CELL_SIZE / 2
         cm.setFrame(-half, half, -half, half)
+        cm.setUvRange(Point2(0, 0), Point2(1, 1))
 
         cx, cy = self._cell_center(row, col)
         node = self._maze_root.attachNewNode(cm.generate())
         node.setP(90)
         node.setPos(cx, cy, WALL_HEIGHT)
-        node.setColor(LVector4(*_CEILING_COLOR))
+
+        if self._tex_ceiling is not None:
+            node.setTexture(self._tex_ceiling)
+            node.setColorScale(LVector4(*_CEILING_COLOR))
+        else:
+            node.setColor(LVector4(*_CEILING_COLOR))
 
     def _build_cell_walls(
         self,
@@ -313,9 +465,15 @@ class Panda3DBackend(BaseBackend):
         cx, cy = self._cell_center(row, col)
         half = CELL_SIZE / 2
 
+        # HPR so each card's normal faces INTO the cell (toward the player).
+        # CardMaker default normal is +Y. setH rotates around Z:
+        #   N wall (at +Y edge): normal must point -Y → H=180
+        #   S wall (at -Y edge): normal must point +Y → H=0
+        #   E wall (at +X edge): normal must point -X → H=-90 (270)
+        #   W wall (at -X edge): normal must point +X → H=90
         wall_specs = [
-            ("N", (cx, cy + half, 0), (0, 0, 0)),
-            ("S", (cx, cy - half, 0), (0, 180, 0)),
+            ("N", (cx, cy + half, 0), (0, 180, 0)),
+            ("S", (cx, cy - half, 0), (0, 0, 0)),
             ("E", (cx + half, cy, 0), (0, -90, 0)),
             ("W", (cx - half, cy, 0), (0, 90, 0)),
         ]
@@ -325,17 +483,25 @@ class Panda3DBackend(BaseBackend):
                 self._make_wall(pos, hpr)
 
     def _make_wall(self, pos: tuple, hpr: tuple) -> None:
-        from panda3d.core import CardMaker, LVector4
+        from panda3d.core import CardMaker, LVector4, Point2
 
         cm = CardMaker("wall")
         half_w = CELL_SIZE / 2
         cm.setFrame(-half_w, half_w, 0, WALL_HEIGHT)
+        # UV: tile 1× horizontally across the cell width, 1× vertically for wall height.
+        cm.setUvRange(Point2(0, 0), Point2(1, 1))
 
         node = self._maze_root.attachNewNode(cm.generate())
         node.setPos(*pos)
         node.setH(hpr[1])
-        node.setColor(LVector4(*_WALL_COLOR))
-        node.setTwoSided(True)
+        # Single-sided so point-light normal calculations work correctly.
+
+        if self._tex_wall is not None:
+            node.setTexture(self._tex_wall)
+            # setColorScale tints the texture without replacing it.
+            node.setColorScale(LVector4(*_WALL_COLOR))
+        else:
+            node.setColor(LVector4(*_WALL_COLOR))
 
     def _build_cell_markers(self, cell: dict, row: int, col: int) -> None:
         """Add floating markers for gates and exit."""
@@ -507,8 +673,17 @@ class Panda3DBackend(BaseBackend):
     def _handle_resize(self) -> None:
         if self._base is None or self._parent_widget is None:
             return
+        if self._base.win is None:
+            return
+        w, h, _dpr = self._host_pixel_size(self._parent_widget)
+        # Skip if already the right size.
+        if self._base.win.getXSize() == w and self._base.win.getYSize() == h:
+            return
         from panda3d.core import WindowProperties
         props = WindowProperties()
-        props.setSize(self._parent_widget.width(), self._parent_widget.height())
-        if self._base.win is not None:
-            self._base.win.requestProperties(props)
+        props.setSize(w, h)
+        self._base.win.requestProperties(props)
+        # Flush the resize by stepping the render loop immediately — Panda3D
+        # processes window property changes during taskMgr.step(), not instantly.
+        for _ in range(3):
+            self._base.taskMgr.step()

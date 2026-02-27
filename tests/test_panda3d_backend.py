@@ -23,20 +23,20 @@ from gui.renderers.panda3d_backend import (
 class TestHeadingConversions:
     def test_heading_for_facing_cardinal(self):
         assert _heading_for_facing("N") == 0.0
-        assert _heading_for_facing("E") == 90.0
+        assert _heading_for_facing("E") == 270.0
         assert _heading_for_facing("S") == 180.0
-        assert _heading_for_facing("W") == 270.0
+        assert _heading_for_facing("W") == 90.0
 
     def test_facing_for_heading_cardinal(self):
         assert _facing_for_heading(0.0) == "N"
-        assert _facing_for_heading(90.0) == "E"
+        assert _facing_for_heading(90.0) == "W"
         assert _facing_for_heading(180.0) == "S"
-        assert _facing_for_heading(270.0) == "W"
+        assert _facing_for_heading(270.0) == "E"
 
     def test_facing_for_heading_wraps(self):
         assert _facing_for_heading(360.0) == "N"
-        assert _facing_for_heading(-90.0) == "W"
-        assert _facing_for_heading(450.0) == "E"
+        assert _facing_for_heading(-90.0) == "E"
+        assert _facing_for_heading(450.0) == "W"
 
 
 class TestBackendInputHandling:
@@ -72,6 +72,15 @@ class TestBackendInputHandling:
         self.backend._handle_key_press("turn_right")
         assert self.backend._facing_str == "W"
         assert "W" in self.facings
+
+    def test_arrow_key_turn_aliases(self):
+        self.backend._facing_h = 180.0
+        self.backend._facing_str = "S"
+        # Same internal actions used by arrow-left / arrow-right bindings.
+        self.backend._handle_key_press("turn_left")
+        assert self.backend._facing_str == "E"
+        self.backend._handle_key_press("turn_right")
+        assert self.backend._facing_str == "S"
 
     def test_full_rotation(self):
         """Four right turns returns to original facing."""

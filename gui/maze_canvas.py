@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
+from PyQt6.QtGui import QColor, QFont, QKeyEvent, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QWidget
 
 from gui.renderers.base_backend import BaseBackend
@@ -37,6 +37,20 @@ log = logging.getLogger(__name__)
 CELL_PX = 64
 WALL_PX = 4
 PASSAGE_PX = 6
+
+# Maps Qt key codes to Panda3D key names for forwarding to embedded backends.
+_QT_KEY_TO_PANDA: dict[Qt.Key, str] = {
+    Qt.Key.Key_W: "w",
+    Qt.Key.Key_S: "s",
+    Qt.Key.Key_A: "a",
+    Qt.Key.Key_D: "d",
+    Qt.Key.Key_Q: "q",
+    Qt.Key.Key_E: "e",
+    Qt.Key.Key_Up: "arrow_up",
+    Qt.Key.Key_Down: "arrow_down",
+    Qt.Key.Key_Left: "arrow_left",
+    Qt.Key.Key_Right: "arrow_right",
+}
 
 COLOR_FOG = QColor("#1a1a2e")
 COLOR_VISIBLE = QColor("#16213e")
@@ -96,6 +110,7 @@ class MazeCanvas(QWidget):
         self._facing_dir: str = "S"
         self._fallback_reason: str | None = None
         self.setMinimumSize(200, 200)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         # Backend setup
         self._backend: BaseBackend | None = None
@@ -392,6 +407,24 @@ class MazeCanvas(QWidget):
                 painter.drawLine(int(rect.left()), int(cy), int(cx), int(cy))
             elif d == "E":
                 painter.drawLine(int(cx), int(cy), int(rect.right()), int(cy))
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        """Forward key presses to the embedded 3D backend via its messenger."""
+        if self._backend_available and self._backend is not None:
+            panda_key = _QT_KEY_TO_PANDA.get(Qt.Key(event.key()))
+            if panda_key and not event.isAutoRepeat():
+                self._backend.inject_key(panda_key, pressed=True)
+                return
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        """Forward key releases to the embedded 3D backend via its messenger."""
+        if self._backend_available and self._backend is not None:
+            panda_key = _QT_KEY_TO_PANDA.get(Qt.Key(event.key()))
+            if panda_key and not event.isAutoRepeat():
+                self._backend.inject_key(panda_key, pressed=False)
+                return
+        super().keyReleaseEvent(event)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if not self._cells or self._player_pos is None:

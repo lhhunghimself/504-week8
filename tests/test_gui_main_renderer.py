@@ -18,6 +18,13 @@ class _FakeController(QObject):
 class _FakeBackend:
     def __init__(self) -> None:
         self.resize_calls = 0
+        self.start_calls = 0
+
+    def is_ready(self) -> bool:
+        return self.start_calls > 0
+
+    def start(self, _parent_widget) -> None:
+        self.start_calls += 1
 
     def _handle_resize(self) -> None:
         self.resize_calls += 1
@@ -78,4 +85,5 @@ def test_mainwindow_panda3d_viewport_resize_sync(qtbot, monkeypatch):
     host.resize(host.width() + 24, host.height() + 24)
     qtbot.wait(20)
 
+    assert backend.start_calls >= 1
     assert backend.resize_calls >= 1

@@ -176,7 +176,16 @@ class MainWindow(QMainWindow):
             self._viewport_host_layout.setContentsMargins(0, 0, 0, 0)
 
             if renderer == "panda3d":
+                # For Panda3D: give the viewport host an expanding size policy so
+                # Qt allocates it the majority of the vertical space in the splitter.
+                from PyQt6.QtWidgets import QSizePolicy
+                self._viewport_host.setSizePolicy(
+                    QSizePolicy.Policy.Expanding,
+                    QSizePolicy.Policy.Expanding,
+                )
                 self._canvas = self._create_panda3d_canvas()
+                # The 2D canvas shows the minimap strip; cap its height.
+                self._canvas.setMaximumHeight(200)
             elif renderer == "godot":
                 self._godot_placeholder = QLabel(
                     "Waiting for Godot viewport..."
@@ -193,7 +202,13 @@ class MainWindow(QMainWindow):
             left_splitter = QSplitter(Qt.Orientation.Vertical)
             left_splitter.addWidget(self._viewport_host)
             left_splitter.addWidget(self._canvas)
-            left_splitter.setSizes([360, 280])
+            if renderer == "panda3d":
+                # 3D view gets ~75% of the space; 2D map strip gets ~25%.
+                left_splitter.setStretchFactor(0, 3)
+                left_splitter.setStretchFactor(1, 1)
+                left_splitter.setSizes([500, 150])
+            else:
+                left_splitter.setSizes([360, 280])
             left_layout.addWidget(left_splitter)
         else:
             self._viewport_host = None
@@ -229,8 +244,63 @@ class MainWindow(QMainWindow):
 
         backend = Panda3DBackend()
         canvas = MazeCanvas(use_godot=False, backend=backend)
-        backend.start(self._viewport_host)
         return canvas
+
+    def _ensure_panda3d_started(self) -> None:
+        """Start Panda3D backend lazily once the viewport host is shown."""
+        if self._renderer != "panda3d":
+            return
+        if not isinstance(self._canvas, MazeCanvas):
+            return
+        if self._viewport_host is None:
+            return
+        backend = self._canvas._backend
+        if backend is None:
+            return
+        if not backend.is_ready():
+            # Starting too early (before native show/map) can trigger GLX drawable errors.
+            backend.start(self._viewport_host)
+            # The Qt layout engine may not have assigned final sizes yet.
+            # Poll until the Panda3D window matches the host widget, giving up after ~1s.
+            self._schedule_panda3d_size_sync()
+        elif hasattr(backend, "_handle_resize"):
+            backend._handle_resize()
+
+    def _schedule_panda3d_size_sync(self, _attempts: int = 0) -> None:
+        """Poll until the Panda3D window matches the host widget size, then stop.
+
+        The Qt layout engine finalises child-widget sizes asynchronously after
+        ``show()``.  We retry with exponential back-off for up to ~1 second so
+        the Panda3D sub-window always fills its host.
+        """
+        if self._viewport_host is None or not isinstance(self._canvas, MazeCanvas):
+            return
+        backend = self._canvas._backend
+        if backend is None or not backend.is_ready():
+            return
+        backend._handle_resize()
+
+        # Compare in physical pixels (Qt uses device-independent pixels).
+        try:
+            dpr = float(self._viewport_host.devicePixelRatioF())
+        except Exception:
+            dpr = 1.0
+        host_px_w = max(1, int(round(self._viewport_host.width() * dpr)))
+        host_px_h = max(1, int(round(self._viewport_host.height() * dpr)))
+
+        base = getattr(backend, "_base", None)
+        win = base.win if base is not None else None
+        if win is None:
+            return
+        already_correct = win.getXSize() == host_px_w and win.getYSize() == host_px_h
+
+        if already_correct or _attempts >= 8:
+            return
+        delay_ms = min(50 * (2 ** _attempts), 400)
+        QTimer.singleShot(
+            delay_ms,
+            lambda: self._schedule_panda3d_size_sync(_attempts + 1),
+        )
 
     def _wire_signals(self) -> None:
         c = self._controller
@@ -400,8 +470,15 @@ class MainWindow(QMainWindow):
             if self._renderer == "godot":
                 self._sync_embedded_godot_viewport()
             elif self._renderer == "panda3d":
+                self._ensure_panda3d_started()
                 self._sync_panda3d_viewport()
         return super().eventFilter(watched, event)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        # Defer to next event-loop tick so the layout engine has a chance to
+        # assign final sizes to child widgets before Panda3D reads them.
+        QTimer.singleShot(0, self._ensure_panda3d_started)
 
     def _sync_panda3d_viewport(self) -> None:
         if not isinstance(self._canvas, MazeCanvas):
@@ -417,6 +494,28 @@ class MainWindow(QMainWindow):
                 self._scores.show_scores(scores)
             except Exception:
                 pass
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        """Forward key events to the canvas so Panda3D backend receives them."""
+        if (
+            self._renderer == "panda3d"
+            and MazeCanvas is not None
+            and isinstance(self._canvas, MazeCanvas)
+        ):
+            self._canvas.keyPressEvent(event)
+            return
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event) -> None:  # noqa: N802
+        """Forward key release events to the canvas so Panda3D backend receives them."""
+        if (
+            self._renderer == "panda3d"
+            and MazeCanvas is not None
+            and isinstance(self._canvas, MazeCanvas)
+        ):
+            self._canvas.keyReleaseEvent(event)
+            return
+        super().keyReleaseEvent(event)
 
     def _on_facing_changed(self, direction: str) -> None:
         d = (direction or "").strip().upper()

@@ -21,6 +21,7 @@ def test_parse_startup_flags_defaults():
     assert cfg.maze_size == 3
     assert cfg.maze_seed == 0
     assert cfg.num_gates == 1
+    assert cfg.use_godot is True
 
 
 def test_parse_startup_flags_detects_reset_flag():
@@ -55,16 +56,27 @@ def test_parse_startup_flags_gui():
     cfg = main._parse_startup_flags(["--gui"])
     assert cfg.gui is True
     assert cfg.maze_size == 3
+    assert cfg.use_godot is True
+
+
+def test_parse_startup_flags_no_godot():
+    main = _import_main()
+    cfg = main._parse_startup_flags(["--gui", "--no-godot"])
+    assert cfg.gui is True
+    assert cfg.use_godot is False
 
 
 def test_parse_startup_flags_all_combined():
     main = _import_main()
-    cfg = main._parse_startup_flags(["--size", "5", "--seed", "99", "--gates", "2", "--reset-game", "--gui"])
+    cfg = main._parse_startup_flags(
+        ["--size", "5", "--seed", "99", "--gates", "2", "--reset-game", "--gui", "--no-godot"]
+    )
     assert cfg.maze_size == 5
     assert cfg.maze_seed == 99
     assert cfg.num_gates == 2
     assert cfg.reset_game is True
     assert cfg.gui is True
+    assert cfg.use_godot is False
 
 
 def test_parse_startup_flags_rejects_unknown_arguments():

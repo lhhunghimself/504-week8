@@ -8,6 +8,7 @@ extends Node
 
 signal maze_update_received(snapshot: Dictionary)
 signal highlight_player_received(row: int, col: int)
+signal view_direction_received(direction: String)
 
 var _socket := WebSocketPeer.new()
 var _connected := false
@@ -62,11 +63,20 @@ func _handle_message(raw: String) -> void:
 		"maze_update":
 			var snapshot: Dictionary = msg.get("snapshot", {})
 			if snapshot.size() > 0:
+				print("[ws] maze_update received cells=%d size=%dx%d" % [
+					snapshot.get("cells", []).size(),
+					snapshot.get("width", 0),
+					snapshot.get("height", 0),
+				])
 				maze_update_received.emit(snapshot)
 		"highlight_player":
 			var row: int = msg.get("row", 0)
 			var col: int = msg.get("col", 0)
 			highlight_player_received.emit(row, col)
+		"set_view_direction":
+			var value: String = msg.get("value", "").to_upper()
+			if value in ["N", "S", "E", "W"]:
+				view_direction_received.emit(value)
 		_:
 			push_warning("Unknown message type: %s" % msg.get("type", ""))
 

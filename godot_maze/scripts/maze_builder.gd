@@ -10,6 +10,7 @@ extends Node3D
 const CELL_SIZE := 4.0
 const WALL_HEIGHT := 3.0
 const WALL_THICKNESS := 0.3
+const TextureGen = preload("res://scripts/texture_gen.gd")
 
 var _built_cells: Dictionary = {}  # key: "r,c" → Node3D
 var _snapshot: Dictionary = {}
@@ -41,6 +42,11 @@ func _ready() -> void:
 
 func _on_maze_update(snapshot: Dictionary) -> void:
 	_snapshot = snapshot
+	print("[maze_builder] maze_update cells=%d size=%dx%d" % [
+		snapshot.get("cells", []).size(),
+		snapshot.get("width", 0),
+		snapshot.get("height", 0),
+	])
 	_rebuild(snapshot)
 
 func _rebuild(snapshot: Dictionary) -> void:
@@ -98,7 +104,7 @@ func _rebuild(snapshot: Dictionary) -> void:
 		# Point light per visible cell for that retro look
 		var light := OmniLight3D.new()
 		light.position = Vector3(CELL_SIZE / 2.0, WALL_HEIGHT * 0.8, CELL_SIZE / 2.0)
-		light.light_energy = 0.6
+		light.light_energy = 1.6
 		light.light_color = Color(0.0, 1.0, 0.25) if not has_gate else Color(1.0, 0.6, 0.1)
 		light.omni_range = CELL_SIZE * 1.2
 		light.omni_attenuation = 1.5

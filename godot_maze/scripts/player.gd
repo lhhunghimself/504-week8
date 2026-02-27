@@ -21,6 +21,7 @@ var _facing_yaw: float = 180.0  # Start facing south (into the maze)
 
 var _is_moving := false
 var _snapshot: Dictionary = {}
+var _has_spawned := false
 
 # Cardinal direction vectors in world space (row, col deltas)
 const DIR_DELTA := {
@@ -32,20 +33,25 @@ const DIR_DELTA := {
 const DIR_YAW := {"N": 0.0, "S": 180.0, "E": 90.0, "W": 270.0}
 
 func _ready() -> void:
+	_camera.current = true
+	_apply_yaw()
 	_ws.maze_update_received.connect(_on_maze_update)
 	_ws.highlight_player_received.connect(_on_highlight_player)
+	_ws.view_direction_received.connect(_on_view_direction)
 
 func _on_maze_update(snapshot: Dictionary) -> void:
 	_snapshot = snapshot
-	# Find player position and teleport there on first update
+	# Find player position and teleport there on first update.
+	# Teleport unconditionally the first time so start-at-(0,0) does not remain at world origin.
 	for cell in snapshot.get("cells", []):
 		if cell.get("is_player", false):
 			var target_row: int = cell["row"]
 			var target_col: int = cell["col"]
-			if _grid_row != target_row or _grid_col != target_col:
+			if not _has_spawned or _grid_row != target_row or _grid_col != target_col:
 				_grid_row = target_row
 				_grid_col = target_col
 				_teleport_to_grid()
+				_has_spawned = true
 			break
 
 func _on_highlight_player(row: int, col: int) -> void:
@@ -54,18 +60,30 @@ func _on_highlight_player(row: int, col: int) -> void:
 		_grid_col = col
 		_smooth_move_to_grid()
 
+func _on_view_direction(direction: String) -> void:
+	if not DIR_YAW.has(direction):
+		return
+	_facing_yaw = DIR_YAW[direction]
+	_apply_yaw()
+
 func _teleport_to_grid() -> void:
-	position = _builder.get_cell_world_pos(_grid_row, _grid_col)
+	position = _current_cell_world_pos()
 
 func _smooth_move_to_grid() -> void:
 	if _is_moving:
 		return
 	_is_moving = true
-	var target := _builder.get_cell_world_pos(_grid_row, _grid_col)
+	var target: Vector3 = _current_cell_world_pos()
 	var tween := create_tween()
 	tween.tween_property(self, "position", target, MOVE_DURATION)\
 		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	tween.tween_callback(func(): _is_moving = false)
+
+func _current_cell_world_pos() -> Vector3:
+	var pos = _builder.call("get_cell_world_pos", _grid_row, _grid_col)
+	if pos is Vector3:
+		return pos
+	return Vector3.ZERO
 
 func _unhandled_input(event: InputEvent) -> void:
 	if _is_moving:

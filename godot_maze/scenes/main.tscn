@@ -29,6 +29,7 @@ script = ExtResource("3")
 [node name="Camera3D" type="Camera3D" parent="Player"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.8, 0)
 fov = 90.0
+current = true
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = ExtResource("5")
@@ -36,7 +37,7 @@ environment = ExtResource("5")
 [node name="AmbientLight" type="DirectionalLight3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 0.7, 0.7, 0, -0.7, 0.7, 0, 10, 0)
 light_color = Color(0.1, 0.2, 0.1, 1)
-light_energy = 0.2
+light_energy = 1.0
 shadow_enabled = false
 
 [node name="CRTOverlay" type="ColorRect" parent="."]
@@ -45,3 +46,4 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 mouse_filter = 2
 material = SubResource("ShaderMaterial_crt")
+visible = false

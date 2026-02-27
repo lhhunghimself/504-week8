@@ -554,6 +554,7 @@ class StartupConfig:
     maze_seed: int = 0
     num_gates: int = 1
     gui: bool = False
+    use_godot: bool = True
 
 
 def _parse_startup_flags(argv: list[str]) -> StartupConfig:
@@ -566,6 +567,8 @@ def _parse_startup_flags(argv: list[str]) -> StartupConfig:
             config.reset_game = True
         elif arg == "--gui":
             config.gui = True
+        elif arg == "--no-godot":
+            config.use_godot = False
         elif arg == "--size":
             i += 1
             if i >= len(argv):
@@ -632,7 +635,7 @@ def cli_main(argv: list[str] | None = None) -> None:
         config = _parse_startup_flags(argv)
     except ValueError as e:
         print(e)
-        print("Usage: python main.py [--gui] [--size N] [--seed N] [--gates N] [--reset-game]")
+        print("Usage: python main.py [--gui] [--no-godot] [--size N] [--seed N] [--gates N] [--reset-game]")
         return
 
     if config.gui:

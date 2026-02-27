@@ -20,31 +20,29 @@ vec2 curve_uv(vec2 uv) {
 
 void fragment() {
 	vec2 uv = curve_uv(SCREEN_UV);
+	vec3 color = vec3(0.0);
 
 	// Discard pixels outside curved screen
-	if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-		COLOR = vec4(0.0, 0.0, 0.0, 1.0);
-		return;
+	if (!(uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)) {
+		// Chromatic aberration
+		float ca = chromatic_aberration / 1000.0;
+		float r = texture(SCREEN_TEXTURE, vec2(uv.x + ca, uv.y)).r;
+		float g = texture(SCREEN_TEXTURE, uv).g;
+		float b = texture(SCREEN_TEXTURE, vec2(uv.x - ca, uv.y)).b;
+		color = vec3(r, g, b);
+
+		// Scanlines
+		float scanline = sin(uv.y * 800.0) * 0.5 + 0.5;
+		color *= 1.0 - scanline_strength * scanline;
+
+		// Vignette
+		float dist = distance(uv, vec2(0.5));
+		color *= 1.0 - vignette_strength * dist * dist * 4.0;
+
+		// Flicker
+		float flicker = 1.0 - flicker_strength * sin(TIME * flicker_speed * 6.283);
+		color *= flicker;
 	}
-
-	// Chromatic aberration
-	float ca = chromatic_aberration / 1000.0;
-	float r = texture(SCREEN_TEXTURE, vec2(uv.x + ca, uv.y)).r;
-	float g = texture(SCREEN_TEXTURE, uv).g;
-	float b = texture(SCREEN_TEXTURE, vec2(uv.x - ca, uv.y)).b;
-	vec3 color = vec3(r, g, b);
-
-	// Scanlines
-	float scanline = sin(uv.y * 800.0) * 0.5 + 0.5;
-	color *= 1.0 - scanline_strength * scanline;
-
-	// Vignette
-	float dist = distance(uv, vec2(0.5));
-	color *= 1.0 - vignette_strength * dist * dist * 4.0;
-
-	// Flicker
-	float flicker = 1.0 - flicker_strength * sin(TIME * flicker_speed * 6.283);
-	color *= flicker;
 
 	COLOR = vec4(color, 1.0);
 }

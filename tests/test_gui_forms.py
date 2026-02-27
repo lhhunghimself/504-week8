@@ -227,6 +227,7 @@ def test_completion_screen_shown(qtbot, dummy_complete_view):
 
     panel = FormsPanel()
     qtbot.addWidget(panel)
+    panel.show()
     panel.update_view(dummy_complete_view)
 
     assert panel.completion_overlay.isVisible()

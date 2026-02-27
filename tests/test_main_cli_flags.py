@@ -136,6 +136,18 @@ def test_parse_startup_flags_renderer_missing_value():
         main._parse_startup_flags(["--renderer"])
 
 
+def test_parse_startup_flags_renderer_conflicts_with_no_godot():
+    main = _import_main()
+    with pytest.raises(ValueError, match="Cannot combine .*godot.*--no-godot"):
+        main._parse_startup_flags(["--renderer", "godot", "--no-godot"])
+
+
+def test_parse_startup_flags_renderer_conflict_is_order_independent():
+    main = _import_main()
+    with pytest.raises(ValueError, match="Cannot combine .*godot.*--no-godot"):
+        main._parse_startup_flags(["--no-godot", "--renderer", "godot"])
+
+
 # ---------------------------------------------------------------------------
 # _initialize_question_bank
 # ---------------------------------------------------------------------------

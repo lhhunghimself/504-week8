@@ -561,6 +561,8 @@ class StartupConfig:
 def _parse_startup_flags(argv: list[str]) -> StartupConfig:
     """Parse CLI startup flags into a StartupConfig."""
     config = StartupConfig()
+    explicit_renderer: str | None = None
+    no_godot_flag = False
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -569,7 +571,7 @@ def _parse_startup_flags(argv: list[str]) -> StartupConfig:
         elif arg == "--gui":
             config.gui = True
         elif arg == "--no-godot":
-            config.use_godot = False
+            no_godot_flag = True
         elif arg == "--renderer":
             i += 1
             if i >= len(argv):
@@ -577,11 +579,7 @@ def _parse_startup_flags(argv: list[str]) -> StartupConfig:
             val = argv[i].lower()
             if val not in ("panda3d", "godot"):
                 raise ValueError(f"--renderer must be 'panda3d' or 'godot', got '{val}'")
-            config.renderer = val
-            if val == "godot":
-                config.use_godot = True
-            else:
-                config.use_godot = False
+            explicit_renderer = val
         elif arg == "--size":
             i += 1
             if i >= len(argv):
@@ -606,6 +604,18 @@ def _parse_startup_flags(argv: list[str]) -> StartupConfig:
         else:
             raise ValueError(f"Unknown argument(s): {arg}")
         i += 1
+
+    # Normalize renderer selection after parsing so semantics are order-independent.
+    if explicit_renderer == "godot" and no_godot_flag:
+        raise ValueError("Cannot combine --renderer godot with --no-godot")
+
+    if explicit_renderer is not None:
+        config.renderer = explicit_renderer
+        config.use_godot = explicit_renderer == "godot"
+    elif no_godot_flag:
+        config.renderer = "panda3d"
+        config.use_godot = False
+
     return config
 
 
@@ -648,7 +658,10 @@ def cli_main(argv: list[str] | None = None) -> None:
         config = _parse_startup_flags(argv)
     except ValueError as e:
         print(e)
-        print("Usage: python main.py [--gui] [--no-godot] [--size N] [--seed N] [--gates N] [--reset-game]")
+        print(
+            "Usage: python main.py [--gui] [--renderer panda3d|godot] "
+            "[--no-godot] [--size N] [--seed N] [--gates N] [--reset-game]"
+        )
         return
 
     if config.gui:

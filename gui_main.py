@@ -169,6 +169,8 @@ class MainWindow(QMainWindow):
             self._viewport_host.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
             self._viewport_host.setMinimumHeight(220)
             self._viewport_host.setStyleSheet("background-color: #000; border: 1px solid #333;")
+            # Keep resize/show events flowing for both Godot and Panda3D paths.
+            self._viewport_host.installEventFilter(self)
 
             self._viewport_host_layout = QVBoxLayout(self._viewport_host)
             self._viewport_host_layout.setContentsMargins(0, 0, 0, 0)
@@ -176,7 +178,6 @@ class MainWindow(QMainWindow):
             if renderer == "panda3d":
                 self._canvas = self._create_panda3d_canvas()
             elif renderer == "godot":
-                self._viewport_host.installEventFilter(self)
                 self._godot_placeholder = QLabel(
                     "Waiting for Godot viewport..."
                     if self._can_embed_godot else

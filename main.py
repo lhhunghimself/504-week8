@@ -554,7 +554,8 @@ class StartupConfig:
     maze_seed: int = 0
     num_gates: int = 1
     gui: bool = False
-    use_godot: bool = True
+    use_godot: bool = False
+    renderer: str = "panda3d"
 
 
 def _parse_startup_flags(argv: list[str]) -> StartupConfig:
@@ -569,6 +570,18 @@ def _parse_startup_flags(argv: list[str]) -> StartupConfig:
             config.gui = True
         elif arg == "--no-godot":
             config.use_godot = False
+        elif arg == "--renderer":
+            i += 1
+            if i >= len(argv):
+                raise ValueError("--renderer requires a value (panda3d or godot)")
+            val = argv[i].lower()
+            if val not in ("panda3d", "godot"):
+                raise ValueError(f"--renderer must be 'panda3d' or 'godot', got '{val}'")
+            config.renderer = val
+            if val == "godot":
+                config.use_godot = True
+            else:
+                config.use_godot = False
         elif arg == "--size":
             i += 1
             if i >= len(argv):

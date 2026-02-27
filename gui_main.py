@@ -2,7 +2,7 @@
 
 Contract: interfaces.md §7.4 / §7.5.
 Usage:
-    python gui_main.py [--size N] [--seed N] [--gates N] [--reset-game] [--no-godot]
+    python gui_main.py [--size N] [--seed N] [--gates N] [--reset-game] [--renderer panda3d|godot]
     python main.py --gui [...]
 """
 from __future__ import annotations
@@ -477,7 +477,11 @@ def gui_main(config: StartupConfig | None = None) -> None:
 
     controller = GameController(engine, threaded=True)
 
-    window = MainWindow(controller, repo, use_godot=config.use_godot)
+    window = MainWindow(
+        controller, repo,
+        use_godot=config.use_godot,
+        renderer=config.renderer,
+    )
     window.setStyleSheet(_STYLESHEET)
     window.show()
 

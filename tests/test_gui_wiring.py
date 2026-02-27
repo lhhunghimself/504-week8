@@ -95,7 +95,23 @@ def test_direction_click_updates_both_panels(qtbot, maze_module, repo, puzzle_re
     mock_forms.reset_mock()
     mock_canvas.reset_mock()
 
-    direction = engine.view().available_moves[0]
+    # Prefer a non-gated move so movement persists immediately.
+    start = maze.start
+    direction = None
+    for d in maze.available_moves(start):
+        if maze.gate_id_for(start, d) is None:
+            direction = d.name
+            break
+
+    if direction is None:
+        # Minimal maze may gate the only move from start; solve first, then move.
+        d = maze.available_moves(start)[0]
+        controller.on_command(cmd_cls(verb="go", args=[d.name]))
+        qtbot.waitUntil(lambda: engine.view().pending_puzzle is not None, timeout=2000)
+        controller.on_command(cmd_cls(verb="answer", args=["solve"]))
+        qtbot.waitUntil(lambda: engine.view().pending_puzzle is None, timeout=2000)
+        direction = d.name
+
     controller.on_command(cmd_cls(verb="go", args=[direction]))
     qtbot.waitUntil(lambda: mock_forms.update_view.called, timeout=2000)
 
@@ -148,9 +164,10 @@ def test_hint_flow_through_gui(qtbot, maze_module, repo, puzzle_registry):
     engine, cmd_cls, maze = _make_test_engine(maze_module, repo, puzzle_registry)
     controller = GameController(engine)
 
-    results = []
-    controller.view_changed.connect(lambda v: results.append(("view", v)))
-    controller.messages_ready.connect(lambda m: results.append(("msgs", m)))
+    hint_options = []
+    hint_clues = []
+    controller.hint_options_ready.connect(lambda opts: hint_options.append(opts))
+    controller.hint_result_ready.connect(lambda clue: hint_clues.append(clue))
 
     controller.initialize()
 
@@ -158,20 +175,15 @@ def test_hint_flow_through_gui(qtbot, maze_module, repo, puzzle_registry):
         gate_id = maze.gate_id_for(maze.start, d)
         if gate_id is not None:
             controller.on_command(cmd_cls(verb="go", args=[d.name]))
-            qtbot.waitUntil(lambda: len(results) >= 2, timeout=2000)
+            qtbot.waitUntil(lambda: engine.view().pending_puzzle is not None, timeout=2000)
 
             controller.on_command(cmd_cls(verb="hint", args=[]))
-            qtbot.waitUntil(lambda: len(results) >= 3, timeout=2000)
-
-            last = results[-1]
-            hint_out = None
-            for tag, val in reversed(results):
-                if tag == "view" and hasattr(val, "maze_snapshot"):
-                    hint_out = val
-                    break
+            qtbot.waitUntil(lambda: len(hint_options) >= 1, timeout=2000)
+            assert len(hint_options[-1]) >= 1, "bare hint should emit available hint options"
 
             controller.on_command(cmd_cls(verb="hint", args=["letter"]))
-            qtbot.waitUntil(lambda: len(results) >= 4, timeout=2000)
+            qtbot.waitUntil(lambda: len(hint_clues) >= 1, timeout=2000)
+            assert hint_clues[-1].startswith("Clue:"), "typed hint should emit a clue string"
             return
 
     pytest.skip("No gate found from start to test hint flow")
@@ -183,7 +195,6 @@ def test_hint_flow_through_gui(qtbot, maze_module, repo, puzzle_registry):
 
 def test_game_completion_shows_score(qtbot, maze_module, repo, puzzle_registry):
     from gui.controller import GameController
-    from maze import Direction
 
     engine, cmd_cls, maze = _make_test_engine(maze_module, repo, puzzle_registry)
     controller = GameController(engine)
@@ -222,6 +233,11 @@ def test_game_completion_shows_score(qtbot, maze_module, repo, puzzle_registry):
             qtbot.waitUntil(lambda: True, timeout=100)
 
     assert len(completed) >= 1, "game_completed signal should fire when exit is reached"
+    metrics = completed[-1]
+    assert isinstance(metrics, dict), "game_completed payload must be a metrics dict"
+    for key in ("elapsed_seconds", "moves", "hints_used"):
+        assert key in metrics, f"missing key in completion metrics: {key}"
+    assert metrics["moves"] >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -235,11 +251,33 @@ def test_save_indicator_on_persist(qtbot, maze_module, repo, puzzle_registry):
     controller = GameController(engine)
 
     outputs = []
+    messages = []
     controller.view_changed.connect(lambda v: outputs.append(v))
+    controller.messages_ready.connect(lambda m: messages.extend(m))
 
     controller.initialize()
     outputs.clear()
+    messages.clear()
 
-    direction = engine.view().available_moves[0]
+    # Prefer a non-gated move so movement persists immediately.
+    start = maze.start
+    direction = None
+    for d in maze.available_moves(start):
+        if maze.gate_id_for(start, d) is None:
+            direction = d.name
+            break
+
+    if direction is None:
+        # Minimal maze may gate the only move from start; solve first, then move.
+        d = maze.available_moves(start)[0]
+        controller.on_command(cmd_cls(verb="go", args=[d.name]))
+        qtbot.waitUntil(lambda: engine.view().pending_puzzle is not None, timeout=2000)
+        controller.on_command(cmd_cls(verb="answer", args=["solve"]))
+        qtbot.waitUntil(lambda: engine.view().pending_puzzle is None, timeout=2000)
+        direction = d.name
+
     controller.on_command(cmd_cls(verb="go", args=[direction]))
     qtbot.waitUntil(lambda: len(outputs) >= 1, timeout=2000)
+    qtbot.waitUntil(lambda: any("saved" in msg.lower() for msg in messages), timeout=2000)
+    assert any("saved" in msg.lower() for msg in messages), \
+        "controller should emit a save indication when did_persist=True"

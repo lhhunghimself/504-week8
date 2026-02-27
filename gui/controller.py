@@ -15,6 +15,8 @@ class GameController(QObject):
     view_changed = pyqtSignal(object)    # GameView
     messages_ready = pyqtSignal(object)  # list[str]
     game_completed = pyqtSignal(object)  # dict (score metrics)
+    hint_options_ready = pyqtSignal(object)  # list[dict]
+    hint_result_ready = pyqtSignal(str)      # clue text
 
     def __init__(self, engine: GameEngine, *, threaded: bool = False,
                  parent: QObject | None = None) -> None:
@@ -50,16 +52,54 @@ class GameController(QObject):
         if output.messages:
             self.messages_ready.emit(output.messages)
 
+        if output.hint_options is not None:
+            self.hint_options_ready.emit(output.hint_options)
+        else:
+            for msg in output.messages:
+                if isinstance(msg, str) and msg.startswith("Clue:"):
+                    self.hint_result_ready.emit(msg)
+                    break
+
+        # Surface an explicit save indication to UI adapters.
+        if output.did_persist:
+            already_has_saved_msg = any(
+                isinstance(m, str) and "saved" in m.lower()
+                for m in output.messages
+            )
+            if not already_has_saved_msg:
+                self.messages_ready.emit(["Progress saved."])
+
         if output.view.is_complete:
-            metrics = {
-                "elapsed_seconds": 0,
-                "moves": getattr(self._engine, "_move_count", 0),
-                "hints_used": getattr(self._engine, "_hints_used", 0),
-            }
+            metrics = self._load_completion_metrics()
             self.game_completed.emit(metrics)
 
     def _handle_error(self, error_msg: str) -> None:
         self.messages_ready.emit([f"Error: {error_msg}"])
+
+    def _load_completion_metrics(self) -> dict:
+        repo = getattr(self._engine, "repo", None)
+        maze = getattr(self._engine, "maze", None)
+        game_id = getattr(self._engine, "game_id", None)
+
+        if repo is not None and hasattr(repo, "top_scores"):
+            try:
+                maze_id = getattr(maze, "maze_id", None)
+                rows = repo.top_scores(maze_id=maze_id, limit=1000)
+                for row in rows:
+                    if row.get("game_id") == game_id:
+                        metrics = row.get("metrics")
+                        if isinstance(metrics, dict):
+                            return metrics
+            except Exception:
+                pass
+
+        # Fallback: derive a reasonable metrics payload from engine state.
+        return {
+            "elapsed_seconds": 0,
+            "moves": getattr(self._engine, "_move_count", 0),
+            "puzzles_solved": len(getattr(self._engine, "_solved_gates", [])),
+            "hints_used": getattr(self._engine, "_hints_used", 0),
+        }
 
     def shutdown(self) -> None:
         if self._worker is not None:

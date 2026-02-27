@@ -166,6 +166,8 @@ class MainWindow(QMainWindow):
 
         if PuzzleDialog and isinstance(self._puzzle, PuzzleDialog):
             c.view_changed.connect(lambda v: self._puzzle.show_puzzle(v.pending_puzzle))
+            c.hint_options_ready.connect(self._puzzle.show_hint_options)
+            c.hint_result_ready.connect(self._puzzle.show_hint_result)
 
         if StatusBar and isinstance(self._status, StatusBar):
             c.view_changed.connect(self._status.update_status)

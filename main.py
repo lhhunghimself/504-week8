@@ -329,6 +329,8 @@ class GameEngine:
                 )
 
             hint_type = args[0].strip().lower() if args else None
+            if hint_type == "":
+                hint_type = None
 
             # Step 1: no type given — return available options for the UI to display
             if hint_type is None:
@@ -555,7 +557,7 @@ class StartupConfig:
     num_gates: int = 1
     gui: bool = False
     use_godot: bool = False
-    renderer: str = "panda3d"
+    renderer: str = "qpaint"
 
 
 def _parse_startup_flags(argv: list[str]) -> StartupConfig:
@@ -575,10 +577,10 @@ def _parse_startup_flags(argv: list[str]) -> StartupConfig:
         elif arg == "--renderer":
             i += 1
             if i >= len(argv):
-                raise ValueError("--renderer requires a value (panda3d, godot, or pygame)")
+                raise ValueError("--renderer requires a value (panda3d, godot, pygame, or qpaint)")
             val = argv[i].lower()
-            if val not in ("panda3d", "godot", "pygame"):
-                raise ValueError(f"--renderer must be 'panda3d', 'godot', or 'pygame', got '{val}'")
+            if val not in ("panda3d", "godot", "pygame", "qpaint"):
+                raise ValueError(f"--renderer must be 'panda3d', 'godot', 'pygame', or 'qpaint', got '{val}'")
             explicit_renderer = val
         elif arg == "--size":
             i += 1
@@ -613,7 +615,7 @@ def _parse_startup_flags(argv: list[str]) -> StartupConfig:
         config.renderer = explicit_renderer
         config.use_godot = explicit_renderer == "godot"
     elif no_godot_flag:
-        config.renderer = "panda3d"
+        config.renderer = "qpaint"
         config.use_godot = False
 
     return config
@@ -659,7 +661,7 @@ def cli_main(argv: list[str] | None = None) -> None:
     except ValueError as e:
         print(e)
         print(
-            "Usage: python main.py [--gui] [--renderer panda3d|godot|pygame] "
+            "Usage: python main.py [--gui] [--renderer panda3d|godot|pygame|qpaint] "
             "[--no-godot] [--size N] [--seed N] [--gates N] [--reset-game]"
         )
         return

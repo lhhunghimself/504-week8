@@ -22,7 +22,7 @@ def test_parse_startup_flags_defaults():
     assert cfg.maze_seed == 0
     assert cfg.num_gates == 1
     assert cfg.use_godot is False
-    assert cfg.renderer == "panda3d"
+    assert cfg.renderer == "qpaint"
 
 
 def test_parse_startup_flags_detects_reset_flag():
@@ -57,7 +57,7 @@ def test_parse_startup_flags_gui():
     cfg = main._parse_startup_flags(["--gui"])
     assert cfg.gui is True
     assert cfg.maze_size == 3
-    assert cfg.renderer == "panda3d"
+    assert cfg.renderer == "qpaint"
 
 
 def test_parse_startup_flags_no_godot():
@@ -65,7 +65,7 @@ def test_parse_startup_flags_no_godot():
     cfg = main._parse_startup_flags(["--gui", "--no-godot"])
     assert cfg.gui is True
     assert cfg.use_godot is False
-    assert cfg.renderer == "panda3d"
+    assert cfg.renderer == "qpaint"
 
 
 def test_parse_startup_flags_all_combined():
@@ -131,6 +131,13 @@ def test_parse_startup_flags_renderer_pygame():
     assert cfg.use_godot is False
 
 
+def test_parse_startup_flags_renderer_qpaint():
+    main = _import_main()
+    cfg = main._parse_startup_flags(["--gui", "--renderer", "qpaint"])
+    assert cfg.renderer == "qpaint"
+    assert cfg.use_godot is False
+
+
 def test_parse_startup_flags_renderer_pygame_with_no_godot():
     main = _import_main()
     cfg = main._parse_startup_flags(["--gui", "--renderer", "pygame", "--no-godot"])
@@ -140,7 +147,7 @@ def test_parse_startup_flags_renderer_pygame_with_no_godot():
 
 def test_parse_startup_flags_renderer_invalid():
     main = _import_main()
-    with pytest.raises(ValueError, match="panda3d.*godot.*pygame"):
+    with pytest.raises(ValueError, match="panda3d.*godot.*pygame.*qpaint"):
         main._parse_startup_flags(["--renderer", "vulkan"])
 
 

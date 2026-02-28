@@ -2,7 +2,7 @@
 
 Contract: interfaces.md §7.4 / §7.5.
 Usage:
-    python gui_main.py [--size N] [--seed N] [--gates N] [--reset-game] [--renderer panda3d|godot|pygame]
+    python gui_main.py [--size N] [--seed N] [--gates N] [--reset-game] [--renderer panda3d|godot|pygame|qpaint]
     python main.py --gui [...]
 """
 from __future__ import annotations
@@ -125,8 +125,8 @@ class MainWindow(QMainWindow):
         controller: GameController,
         repo: object,
         *,
-        use_godot: bool = True,
-        renderer: str = "godot",
+        use_godot: bool = False,
+        renderer: str = "qpaint",
     ) -> None:
         super().__init__()
         self.setWindowTitle("Hack the Maze — PyQt6")
@@ -201,6 +201,14 @@ class MainWindow(QMainWindow):
                     # Import fallback path: hide empty viewport host and let
                     # the 2D map use the full left panel.
                     self._viewport_host.hide()
+            elif renderer == "qpaint":
+                from PyQt6.QtWidgets import QSizePolicy
+                self._viewport_host.setSizePolicy(
+                    QSizePolicy.Policy.Expanding,
+                    QSizePolicy.Policy.Expanding,
+                )
+                self._canvas = self._create_qpaint_canvas()
+                self._canvas.setMaximumHeight(200)
             elif renderer == "godot":
                 self._godot_placeholder = QLabel(
                     "Waiting for Godot viewport..."
@@ -217,7 +225,7 @@ class MainWindow(QMainWindow):
             left_splitter = QSplitter(Qt.Orientation.Vertical)
             left_splitter.addWidget(self._viewport_host)
             left_splitter.addWidget(self._canvas)
-            if renderer == "panda3d" or (renderer == "pygame" and self._pygame_embedded):
+            if renderer in ("panda3d", "qpaint") or (renderer == "pygame" and self._pygame_embedded):
                 left_splitter.setStretchFactor(0, 3)
                 left_splitter.setStretchFactor(1, 1)
                 left_splitter.setSizes([500, 150])
@@ -279,6 +287,30 @@ class MainWindow(QMainWindow):
         self._pygame_embedded = True
         canvas = MazeCanvas(use_godot=False, backend=backend)
         return canvas
+
+    def _create_qpaint_canvas(self) -> MazeCanvas:
+        """Create a MazeCanvas backed by the QPainter pre-rendered backend."""
+        from gui.renderers.qpaint_backend import QPaintBackend
+
+        backend = QPaintBackend()
+        canvas = MazeCanvas(use_godot=False, backend=backend)
+        return canvas
+
+    def _ensure_qpaint_started(self) -> None:
+        """Start QPaint backend lazily once the viewport host is shown."""
+        if self._renderer != "qpaint":
+            return
+        if not isinstance(self._canvas, MazeCanvas):
+            return
+        if self._viewport_host is None:
+            return
+        backend = self._canvas._backend
+        if backend is None:
+            return
+        if not backend.is_ready():
+            backend.start(self._viewport_host)
+        elif hasattr(backend, "_handle_resize"):
+            backend._handle_resize()
 
     def _ensure_panda3d_started(self) -> None:
         """Start Panda3D backend lazily once the viewport host is shown."""
@@ -509,6 +541,8 @@ class MainWindow(QMainWindow):
             elif self._renderer == "pygame":
                 self._ensure_pygame_started()
                 self._sync_pygame_viewport()
+            elif self._renderer == "qpaint":
+                self._ensure_qpaint_started()
         return super().eventFilter(watched, event)
 
     def showEvent(self, event) -> None:  # noqa: N802
@@ -517,6 +551,8 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._ensure_panda3d_started)
         elif self._renderer == "pygame":
             QTimer.singleShot(0, self._ensure_pygame_started)
+        elif self._renderer == "qpaint":
+            QTimer.singleShot(0, self._ensure_qpaint_started)
 
     def _sync_panda3d_viewport(self) -> None:
         if not isinstance(self._canvas, MazeCanvas):
@@ -564,7 +600,7 @@ class MainWindow(QMainWindow):
     def keyPressEvent(self, event) -> None:  # noqa: N802
         """Forward key events to the canvas so the 3D backend receives them."""
         if (
-            self._renderer in ("panda3d", "pygame")
+            self._renderer in ("panda3d", "pygame", "qpaint")
             and MazeCanvas is not None
             and isinstance(self._canvas, MazeCanvas)
         ):
@@ -575,7 +611,7 @@ class MainWindow(QMainWindow):
     def keyReleaseEvent(self, event) -> None:  # noqa: N802
         """Forward key release events to the canvas so the 3D backend receives them."""
         if (
-            self._renderer in ("panda3d", "pygame")
+            self._renderer in ("panda3d", "pygame", "qpaint")
             and MazeCanvas is not None
             and isinstance(self._canvas, MazeCanvas)
         ):

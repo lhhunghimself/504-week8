@@ -327,7 +327,8 @@ This section defines the contracts for the PyQt6 graphical user interface, struc
 | `gui/puzzle_dialog.py` | Team 1 (UI/UX) | Modal/inline puzzle display with answer + hints |
 | `gui/status_bar.py` | Team 1 (UI/UX) | Position, moves, gates, hints, exploration % |
 | `gui/score_board.py` | Team 1 (UI/UX) | Top scores table |
-| `gui/maze_canvas.py` | Team 2 (Canvas) | Graphical maze rendering (toolkit TBD; must be QWidget-embeddable) |
+| `gui/maze_canvas.py` | Team 2 (Canvas) | Graphical maze rendering with pluggable 3D backend |
+| `gui/renderers/` | Team 2 (Canvas) | Renderer backends: `base_backend.py`, `panda3d_backend.py`, `godot_backend.py` |
 | `gui/controller.py` | Team 3 (Controller) | GameController QObject — wires engine to widgets |
 | `gui/engine_worker.py` | Team 3 (Controller) | QThread wrapper around GameEngine |
 
@@ -395,9 +396,15 @@ These are the mandatory signals and slots each widget must expose for the Contro
 
 | Direction | Name | Signature | Description |
 |---|---|---|---|
-| Signal (out) | `direction_clicked` | `str` | `"N"`, `"S"`, `"E"`, `"W"` from click on adjacent cell |
+| Signal (out) | `direction_clicked` | `str` | `"N"`, `"S"`, `"E"`, `"W"` from click or 3D input |
+| Signal (out) | `facing_changed` | `str` | `"N"`, `"S"`, `"E"`, `"W"` when camera facing changes |
 | Slot (in) | `update_maze` | `MazeSnapshot` | Redraw changed cells (diff internally) |
 | Slot (in) | `highlight_player` | `tuple[int,int]` | `(row, col)` to animate player position |
+| Slot (in) | `set_view_direction` | `str` | Set camera facing (N/S/E/W) |
+
+MazeCanvas delegates 3D rendering to a pluggable `BaseBackend` (`gui/renderers/base_backend.py`). Available backends:
+- `Panda3DBackend` (`gui/renderers/panda3d_backend.py`) — in-process, driven by QTimer
+- `GodotBackend` (`gui/renderers/godot_backend.py`) — external subprocess via WebSocket
 
 **Team 3 — GameController (QObject)**
 

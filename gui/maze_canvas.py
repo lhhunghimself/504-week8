@@ -1,17 +1,10 @@
-"""MazeCanvas — QWidget bridge to a Godot 4 first-person 3D renderer.
+"""MazeCanvas — QWidget with pluggable 3D renderer backend.
 
 Contract: interfaces.md §7.3 (Team 2 — MazeCanvas)
 
-When Godot is available, the canvas:
-  1. Starts a QWebSocketServer on a random port
-  2. Launches Godot as a subprocess with --ws-port=PORT
-     (optionally embedded into a provided native Qt host widget via --wid)
-  3. Serializes MazeSnapshot as JSON and sends to Godot
-  4. Receives direction commands from Godot via WebSocket
-  5. Still renders the 2D grid in-app as a live minimap
-
-When Godot is not available (or during tests), falls back to the built-in
-QPainter grid renderer.
+The canvas always renders a 2D QPainter minimap.  When a 3D backend is
+available (Godot or Panda3D), snapshot data is forwarded to the backend
+and user input events flow back.
 
 Signals:
     direction_clicked(str)  "N" | "S" | "E" | "W"
@@ -22,31 +15,20 @@ Slots:
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
-import shutil
-from dataclasses import asdict, dataclass
-from pathlib import Path
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QPointF, QProcess, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
+from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QKeyEvent, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QWidget
 
-try:
-    from PyQt6.QtWebSockets import QWebSocket, QWebSocketServer
-    _HAS_WEBSOCKETS = True
-except ImportError:
-    _HAS_WEBSOCKETS = False
+from gui.renderers.base_backend import BaseBackend
 
 if TYPE_CHECKING:
     from main import CellView, MazeSnapshot
 
 log = logging.getLogger(__name__)
-
-GODOT_PROJECT_DIR = Path(__file__).resolve().parent.parent / "godot_maze"
-GODOT_CONNECT_TIMEOUT_MS = 5000
 
 # ---------------------------------------------------------------------------
 # QPainter fallback style constants
@@ -55,6 +37,20 @@ GODOT_CONNECT_TIMEOUT_MS = 5000
 CELL_PX = 64
 WALL_PX = 4
 PASSAGE_PX = 6
+
+# Maps Qt key codes to Panda3D key names for forwarding to embedded backends.
+_QT_KEY_TO_PANDA: dict[Qt.Key, str] = {
+    Qt.Key.Key_W: "w",
+    Qt.Key.Key_S: "s",
+    Qt.Key.Key_A: "a",
+    Qt.Key.Key_D: "d",
+    Qt.Key.Key_Q: "q",
+    Qt.Key.Key_E: "e",
+    Qt.Key.Key_Up: "arrow_up",
+    Qt.Key.Key_Down: "arrow_down",
+    Qt.Key.Key_Left: "arrow_left",
+    Qt.Key.Key_Right: "arrow_right",
+}
 
 COLOR_FOG = QColor("#1a1a2e")
 COLOR_VISIBLE = QColor("#16213e")
@@ -90,17 +86,8 @@ class _CellState:
         )
 
 
-def _find_godot() -> str | None:
-    """Return the path to the Godot executable, or None."""
-    for name in ("godot", "godot4", "godot-4", "Godot_v4"):
-        path = shutil.which(name)
-        if path:
-            return path
-    return None
-
-
 class MazeCanvas(QWidget):
-    """Maze renderer — Godot 3D when available, QPainter 2D fallback."""
+    """Maze renderer — 3D backend + 2D QPainter minimap."""
 
     direction_clicked = pyqtSignal(str)
     godot_process_started = pyqtSignal(int)
@@ -112,6 +99,7 @@ class MazeCanvas(QWidget):
         *,
         use_godot: bool = True,
         godot_parent_widget: QWidget | None = None,
+        backend: BaseBackend | None = None,
     ) -> None:
         super().__init__(parent)
         self._width = 0
@@ -120,205 +108,62 @@ class MazeCanvas(QWidget):
         self._player_pos: tuple[int, int] | None = None
         self._last_changed: list[tuple[int, int]] = []
         self._facing_dir: str = "S"
+        self._fallback_reason: str | None = None
         self.setMinimumSize(200, 200)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-        # Godot bridge state
-        self._godot_exe = _find_godot() if use_godot else None
-        self._fallback_reason = self._check_godot_fallback(use_godot)
-        self._godot_available = self._fallback_reason is None
-        self._ws_server: QWebSocketServer | None = None
-        self._ws_client: QWebSocket | None = None
-        self._godot_process: QProcess | None = None
-        self._ws_port: int = 0
-        self._pending_messages: list[str] = []
-        self._connect_timeout: QTimer | None = None
-        self._is_closing = False
-        self._godot_stderr_tail: list[str] = []
-        self._godot_parent_widget = godot_parent_widget
+        # Backend setup
+        self._backend: BaseBackend | None = None
+        self._backend_available = False
+
+        if backend is not None:
+            self._init_backend(backend)
+        elif use_godot:
+            self._init_godot_backend(godot_parent_widget)
+        else:
+            self._fallback_reason = "3D disabled"
 
         if self._fallback_reason:
             log.warning("3D mode unavailable: %s", self._fallback_reason)
 
-        if self._godot_available:
-            self._start_ws_server()
+    def _init_backend(self, backend: BaseBackend) -> None:
+        """Attach an externally-provided backend."""
+        self._backend = backend
+        self._backend_available = True
+        backend.on_direction(self._on_backend_direction)
+        backend.on_facing(self._on_backend_facing)
 
-    def _check_godot_fallback(self, use_godot: bool) -> str | None:
-        """Return a human-readable reason for 2D fallback, or None if 3D is OK."""
-        if not use_godot:
-            return "3D disabled (--no-godot flag)"
-        if self._godot_exe is None:
-            return ("Godot not found on PATH — install Godot 4.2+ and ensure "
-                    "'godot' is on your PATH (see README)")
-        if not _HAS_WEBSOCKETS:
-            return "PyQt6-WebSockets not installed (pip install PyQt6-WebSockets)"
-        if not GODOT_PROJECT_DIR.is_dir():
-            return f"Godot project directory not found: {GODOT_PROJECT_DIR}"
-        return None
+    def _init_godot_backend(self, godot_parent_widget: QWidget | None) -> None:
+        """Try to set up the Godot backend."""
+        from gui.renderers.godot_backend import GodotBackend
 
-    # -- WebSocket server (Python side) -------------------------------------
-
-    def _start_ws_server(self) -> None:
-        self._ws_server = QWebSocketServer(
-            "MazeCanvasBridge",
-            QWebSocketServer.SslMode.NonSecureMode,
-            self,
-        )
-        if self._ws_server.listen(port=0):
-            self._ws_port = self._ws_server.serverPort()
-            self._ws_server.newConnection.connect(self._on_godot_connected)
-            log.info("WebSocket server listening on port %d", self._ws_port)
-        else:
-            self._fallback_to_2d("Failed to start WebSocket server")
-
-    def _on_godot_connected(self) -> None:
-        if self._ws_server is None:
-            return
-        if self._connect_timeout and self._connect_timeout.isActive():
-            self._connect_timeout.stop()
-        self._ws_client = self._ws_server.nextPendingConnection()
-        if self._ws_client:
-            self._ws_client.textMessageReceived.connect(self._on_godot_message)
-            log.info("Godot connected via WebSocket")
-            if self._pending_messages:
-                for pending in self._pending_messages:
-                    self._ws_client.sendTextMessage(pending)
-                self._pending_messages.clear()
-
-    def _on_godot_message(self, raw: str) -> None:
-        try:
-            msg = json.loads(raw)
-        except json.JSONDecodeError:
-            return
-        if msg.get("type") == "direction":
-            value = msg.get("value", "")
-            if value in ("N", "S", "E", "W"):
-                self._set_facing_dir(value)
-                self.direction_clicked.emit(value)
-        elif msg.get("type") == "facing":
-            value = msg.get("value", "")
-            if value in ("N", "S", "E", "W"):
-                self._set_facing_dir(value)
-
-    def _send_to_godot(self, msg: dict) -> None:
-        text = json.dumps(msg, separators=(",", ":"))
-        if self._ws_client:
-            self._ws_client.sendTextMessage(text)
-        else:
-            self._pending_messages.append(text)
-
-    # -- Godot subprocess management ----------------------------------------
-
-    def _launch_godot(self) -> None:
-        if self._godot_process is not None or not self._godot_exe or not self._godot_available:
+        reason = GodotBackend.check_availability()
+        if reason:
+            self._fallback_reason = reason
             return
 
-        self._godot_process = QProcess(self)
-        self._godot_process.setWorkingDirectory(str(GODOT_PROJECT_DIR))
-        self._godot_process.started.connect(self._on_godot_started)
-        self._godot_process.errorOccurred.connect(self._on_godot_process_error)
-        self._godot_process.finished.connect(self._on_godot_process_finished)
-        self._godot_process.readyReadStandardError.connect(self._on_godot_stderr)
-        self._godot_process.readyReadStandardOutput.connect(self._on_godot_stdout)
-        args = ["--path", str(GODOT_PROJECT_DIR)]
-        if (
-            self._godot_parent_widget is not None
-            and os.environ.get("XDG_SESSION_TYPE", "").lower() == "x11"
-            and os.environ.get("QT_QPA_PLATFORM", "").lower() != "offscreen"
-        ):
-            args.extend(["--single-window", "--display-driver", "x11", "--rendering-driver", "opengl3"])
-        args.extend(["--", f"--ws-port={self._ws_port}"])
-        log.info("Launching Godot: %s %s", self._godot_exe, " ".join(args))
-        self._godot_process.start(self._godot_exe, args)
-        self._start_connect_timeout()
+        godot = GodotBackend(godot_parent_widget=godot_parent_widget)
+        godot.on_fallback(self._on_backend_fallback)
+        godot.process_started.connect(self.godot_process_started.emit)
+        self._init_backend(godot)
+        godot.start(self)
 
-    def _on_godot_started(self) -> None:
-        if self._godot_process is None:
-            return
-        self.godot_process_started.emit(int(self._godot_process.processId()))
+    def _on_backend_direction(self, direction: str) -> None:
+        self._set_facing_dir(direction)
+        self.direction_clicked.emit(direction)
 
-    def _start_connect_timeout(self) -> None:
-        if self._connect_timeout is None:
-            self._connect_timeout = QTimer(self)
-            self._connect_timeout.setSingleShot(True)
-            self._connect_timeout.timeout.connect(self._on_connect_timeout)
-        self._connect_timeout.start(GODOT_CONNECT_TIMEOUT_MS)
+    def _on_backend_facing(self, direction: str) -> None:
+        self._set_facing_dir(direction)
 
-    def _on_connect_timeout(self) -> None:
-        if self._is_closing or not self._godot_available:
-            return
-        if self._ws_client is None:
-            self._fallback_to_2d(
-                "Godot did not connect to bridge within 5s "
-                "(check that Godot 4.2+ launches and supports WebSocketPeer)"
-            )
-
-    def _on_godot_process_error(self, err: QProcess.ProcessError) -> None:
-        if self._is_closing or not self._godot_available:
-            return
-        self._fallback_to_2d(f"Godot process error: {err.name}")
-
-    def _on_godot_process_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
-        self._godot_process = None
-        if self._is_closing or not self._godot_available:
-            return
-        detail = f"Godot exited (code={exit_code}, status={exit_status.name})"
-        if self._godot_stderr_tail:
-            detail = f"{detail} — {self._godot_stderr_tail[-1]}"
-        self._fallback_to_2d(detail)
-
-    def _on_godot_stderr(self) -> None:
-        if self._godot_process is None:
-            return
-        chunk = bytes(self._godot_process.readAllStandardError()).decode("utf-8", errors="replace")
-        if not chunk:
-            return
-        for line in chunk.splitlines():
-            line = line.strip()
-            if line:
-                self._godot_stderr_tail.append(line)
-        if len(self._godot_stderr_tail) > 10:
-            self._godot_stderr_tail = self._godot_stderr_tail[-10:]
-        log.warning("Godot stderr: %s", chunk.rstrip())
-
-    def _on_godot_stdout(self) -> None:
-        if self._godot_process is None:
-            return
-        chunk = bytes(self._godot_process.readAllStandardOutput()).decode("utf-8", errors="replace")
-        if chunk:
-            log.info("Godot stdout: %s", chunk.rstrip())
-
-    def _fallback_to_2d(self, reason: str) -> None:
+    def _on_backend_fallback(self, reason: str) -> None:
         self._fallback_reason = reason
-        self._godot_available = False
-        self._pending_messages.clear()
+        self._backend_available = False
         log.warning("3D mode unavailable: %s", reason)
-
-        if self._connect_timeout and self._connect_timeout.isActive():
-            self._connect_timeout.stop()
-
-        if self._ws_client:
-            self._ws_client.close()
-            self._ws_client = None
-        if self._ws_server:
-            self._ws_server.close()
-            self._ws_server = None
-
-        self._kill_godot()
-
         if self._width > 0 and self._height > 0:
             ideal_w = self._width * CELL_PX + WALL_PX
             ideal_h = self._height * CELL_PX + WALL_PX
             self.setMinimumSize(ideal_w, ideal_h)
         self.update()
-
-    def _kill_godot(self) -> None:
-        proc = self._godot_process
-        self._godot_process = None
-        if proc and proc.state() != QProcess.ProcessState.NotRunning:
-            proc.terminate()
-            if not proc.waitForFinished(1500):
-                proc.kill()
-                proc.waitForFinished(3000)
 
     # -- Public slots -------------------------------------------------------
 
@@ -348,12 +193,11 @@ class MazeCanvas(QWidget):
         self._player_pos = player_pos
         self._last_changed = changed
 
-        # Always keep the in-window map sized and repainted, even when Godot 3D is active.
         ideal_w = self._width * CELL_PX + WALL_PX
         ideal_h = self._height * CELL_PX + WALL_PX
         self.setMinimumSize(ideal_w, ideal_h)
 
-        if self._godot_available:
+        if self._backend_available and self._backend is not None:
             cells_data = [
                 {
                     "row": cv.row, "col": cv.col, "kind": cv.kind,
@@ -363,36 +207,27 @@ class MazeCanvas(QWidget):
                 }
                 for cv in snapshot.cells
             ]
-            self._send_to_godot({
-                "type": "maze_update",
-                "snapshot": {
-                    "width": snapshot.width,
-                    "height": snapshot.height,
-                    "cells": cells_data,
-                },
+            self._backend.send_maze_update({
+                "width": snapshot.width,
+                "height": snapshot.height,
+                "cells": cells_data,
             })
-            if self._godot_process is None:
-                self._launch_godot()
         self.update()
 
     def highlight_player(self, pos: tuple[int, int]) -> None:
         self._player_pos = pos
-        if self._godot_available:
-            self._send_to_godot({
-                "type": "highlight_player",
-                "row": pos[0], "col": pos[1],
-            })
+        if self._backend_available and self._backend is not None:
+            self._backend.send_highlight_player(pos[0], pos[1])
         else:
             self.update()
 
     def set_view_direction(self, direction: str) -> None:
-        """Set Godot first-person facing direction (N/S/E/W)."""
         d = (direction or "").strip().upper()
         if d not in {"N", "S", "E", "W"}:
             return
         self._set_facing_dir(d)
-        if self._godot_available:
-            self._send_to_godot({"type": "set_view_direction", "value": d})
+        if self._backend_available and self._backend is not None:
+            self._backend.send_view_direction(d)
 
     def facing_direction(self) -> str:
         return self._facing_dir
@@ -443,7 +278,6 @@ class MazeCanvas(QWidget):
         return state is not None and direction in state.connections
 
     def click_cell(self, row: int, col: int) -> None:
-        """Programmatic click — emits direction_clicked if adjacent to player."""
         if self._player_pos is None:
             return
         pr, pc = self._player_pos
@@ -520,7 +354,6 @@ class MazeCanvas(QWidget):
         cx, cy = rect.center().x(), rect.center().y()
         r = min(rect.width(), rect.height()) * 0.34
 
-        # Arrow points are normalized to radius r.
         points_by_dir: dict[str, list[tuple[float, float]]] = {
             "N": [(0.0, -1.0), (-0.8, 0.75), (0.8, 0.75)],
             "S": [(0.0, 1.0), (-0.8, -0.75), (0.8, -0.75)],
@@ -575,10 +408,28 @@ class MazeCanvas(QWidget):
             elif d == "E":
                 painter.drawLine(int(cx), int(cy), int(rect.right()), int(cy))
 
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        """Forward key presses to the embedded 3D backend via its messenger."""
+        if self._backend_available and self._backend is not None:
+            panda_key = _QT_KEY_TO_PANDA.get(Qt.Key(event.key()))
+            if panda_key and not event.isAutoRepeat():
+                self._backend.inject_key(panda_key, pressed=True)
+                return
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        """Forward key releases to the embedded 3D backend via its messenger."""
+        if self._backend_available and self._backend is not None:
+            panda_key = _QT_KEY_TO_PANDA.get(Qt.Key(event.key()))
+            if panda_key and not event.isAutoRepeat():
+                self._backend.inject_key(panda_key, pressed=False)
+                return
+        super().keyReleaseEvent(event)
+
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if not self._cells or self._player_pos is None:
             return
-        if self._godot_available:
+        if self._backend_available:
             return
         x, y = event.position().x(), event.position().y()
         col = int(x // CELL_PX)
@@ -589,14 +440,6 @@ class MazeCanvas(QWidget):
     # -- Cleanup ------------------------------------------------------------
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        self._is_closing = True
-        if self._connect_timeout and self._connect_timeout.isActive():
-            self._connect_timeout.stop()
-        self._kill_godot()
-        if self._ws_client:
-            self._ws_client.close()
-            self._ws_client = None
-        if self._ws_server:
-            self._ws_server.close()
-            self._ws_server = None
+        if self._backend is not None:
+            self._backend.stop()
         super().closeEvent(event)

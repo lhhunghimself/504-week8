@@ -2,7 +2,7 @@
 
 Contract: interfaces.md §7.4 / §7.5.
 Usage:
-    python gui_main.py [--size N] [--seed N] [--gates N] [--reset-game] [--no-godot]
+    python gui_main.py [--size N] [--seed N] [--gates N] [--reset-game] [--renderer panda3d|godot|pygame]
     python main.py --gui [...]
 """
 from __future__ import annotations
@@ -120,13 +120,23 @@ class _StubMapWidget(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, controller: GameController, repo: object, *, use_godot: bool = True) -> None:
+    def __init__(
+        self,
+        controller: GameController,
+        repo: object,
+        *,
+        use_godot: bool = True,
+        renderer: str = "godot",
+    ) -> None:
         super().__init__()
         self.setWindowTitle("Hack the Maze — PyQt6")
         self.setMinimumSize(900, 650)
 
         self._controller = controller
         self._repo = repo
+        self._renderer = renderer
+        self._pygame_viewport: QWidget | None = None
+        self._pygame_embedded = False
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -135,7 +145,7 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         root.addWidget(splitter)
 
-        # -- Left panel: embedded Godot viewport + 2D minimap --
+        # -- Left panel: 3D viewport + 2D minimap --
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -143,6 +153,7 @@ class MainWindow(QMainWindow):
         self._facing_label.setStyleSheet("font-family: monospace; color: #9be79b; padding: 4px;")
         left_layout.addWidget(self._facing_label)
 
+        # Godot embedding state (only used when renderer=="godot")
         self._godot_embed_timer: QTimer | None = None
         self._godot_embed_pid: int | None = None
         self._godot_embed_attempts = 0
@@ -154,34 +165,72 @@ class MainWindow(QMainWindow):
         )
 
         if MazeCanvas is not None:
-            self._godot_host = QWidget()
-            self._godot_host.setObjectName("godotHost")
-            self._godot_host.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
-            self._godot_host.setMinimumHeight(220)
-            self._godot_host.setStyleSheet("background-color: #000; border: 1px solid #333;")
-            self._godot_host.installEventFilter(self)
-            self._godot_host_layout = QVBoxLayout(self._godot_host)
-            self._godot_host_layout.setContentsMargins(0, 0, 0, 0)
-            self._godot_placeholder = QLabel(
-                "Waiting for Godot viewport..."
-                if self._can_embed_godot else
-                "Embedded Godot unavailable (requires X11 + wmctrl)"
-            )
-            self._godot_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._godot_placeholder.setStyleSheet("color: #888;")
-            self._godot_host_layout.addWidget(self._godot_placeholder)
+            # 3D viewport host widget
+            self._viewport_host = QWidget()
+            self._viewport_host.setObjectName("viewportHost")
+            self._viewport_host.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+            self._viewport_host.setMinimumHeight(220)
+            self._viewport_host.setStyleSheet("background-color: #000; border: 1px solid #333;")
+            # Keep resize/show events flowing for both Godot and Panda3D paths.
+            self._viewport_host.installEventFilter(self)
 
-            self._canvas = MazeCanvas(use_godot=use_godot, godot_parent_widget=self._godot_host)
+            self._viewport_host_layout = QVBoxLayout(self._viewport_host)
+            self._viewport_host_layout.setContentsMargins(0, 0, 0, 0)
+
+            if renderer == "panda3d":
+                # For Panda3D: give the viewport host an expanding size policy so
+                # Qt allocates it the majority of the vertical space in the splitter.
+                from PyQt6.QtWidgets import QSizePolicy
+                self._viewport_host.setSizePolicy(
+                    QSizePolicy.Policy.Expanding,
+                    QSizePolicy.Policy.Expanding,
+                )
+                self._canvas = self._create_panda3d_canvas()
+                # The 2D canvas shows the minimap strip; cap its height.
+                self._canvas.setMaximumHeight(200)
+            elif renderer == "pygame":
+                from PyQt6.QtWidgets import QSizePolicy
+                self._viewport_host.setSizePolicy(
+                    QSizePolicy.Policy.Expanding,
+                    QSizePolicy.Policy.Expanding,
+                )
+                self._canvas = self._create_pygame_canvas()
+                if self._pygame_embedded:
+                    self._canvas.setMaximumHeight(200)
+                else:
+                    # Import fallback path: hide empty viewport host and let
+                    # the 2D map use the full left panel.
+                    self._viewport_host.hide()
+            elif renderer == "godot":
+                self._godot_placeholder = QLabel(
+                    "Waiting for Godot viewport..."
+                    if self._can_embed_godot else
+                    "Embedded Godot unavailable (requires X11 + wmctrl)"
+                )
+                self._godot_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self._godot_placeholder.setStyleSheet("color: #888;")
+                self._viewport_host_layout.addWidget(self._godot_placeholder)
+                self._canvas = MazeCanvas(use_godot=use_godot, godot_parent_widget=self._viewport_host)
+            else:
+                self._canvas = MazeCanvas(use_godot=False)
 
             left_splitter = QSplitter(Qt.Orientation.Vertical)
-            left_splitter.addWidget(self._godot_host)
+            left_splitter.addWidget(self._viewport_host)
             left_splitter.addWidget(self._canvas)
-            left_splitter.setSizes([360, 280])
+            if renderer == "panda3d" or (renderer == "pygame" and self._pygame_embedded):
+                left_splitter.setStretchFactor(0, 3)
+                left_splitter.setStretchFactor(1, 1)
+                left_splitter.setSizes([500, 150])
+            elif renderer == "pygame":
+                left_splitter.setStretchFactor(0, 0)
+                left_splitter.setStretchFactor(1, 1)
+                left_splitter.setSizes([0, 650])
+            else:
+                left_splitter.setSizes([360, 280])
             left_layout.addWidget(left_splitter)
         else:
-            self._godot_host = None
-            self._godot_host_layout = None
-            self._godot_placeholder = None
+            self._viewport_host = None
+            self._viewport_host_layout = None
             self._canvas = _StubMapWidget()
             left_layout.addWidget(self._canvas)
         splitter.addWidget(left)
@@ -206,6 +255,86 @@ class MainWindow(QMainWindow):
         splitter.setSizes([400, 500])
 
         self._wire_signals()
+
+    def _create_panda3d_canvas(self) -> MazeCanvas:
+        """Create a MazeCanvas backed by the Panda3D in-process renderer."""
+        from gui.renderers.panda3d_backend import Panda3DBackend
+
+        backend = Panda3DBackend()
+        canvas = MazeCanvas(use_godot=False, backend=backend)
+        return canvas
+
+    def _create_pygame_canvas(self) -> MazeCanvas:
+        """Create a MazeCanvas backed by the Pygame raycaster."""
+        try:
+            from gui.renderers.pygame_backend import PygameBackend, PygameViewport
+        except ImportError:
+            self._pygame_embedded = False
+            log.warning("Pygame not available, falling back to 2D-only mode")
+            return MazeCanvas(use_godot=False)
+
+        backend = PygameBackend()
+        self._pygame_viewport = PygameViewport(backend, self._viewport_host)
+        self._viewport_host_layout.addWidget(self._pygame_viewport)
+        self._pygame_embedded = True
+        canvas = MazeCanvas(use_godot=False, backend=backend)
+        return canvas
+
+    def _ensure_panda3d_started(self) -> None:
+        """Start Panda3D backend lazily once the viewport host is shown."""
+        if self._renderer != "panda3d":
+            return
+        if not isinstance(self._canvas, MazeCanvas):
+            return
+        if self._viewport_host is None:
+            return
+        backend = self._canvas._backend
+        if backend is None:
+            return
+        if not backend.is_ready():
+            # Starting too early (before native show/map) can trigger GLX drawable errors.
+            backend.start(self._viewport_host)
+            # The Qt layout engine may not have assigned final sizes yet.
+            # Poll until the Panda3D window matches the host widget, giving up after ~1s.
+            self._schedule_panda3d_size_sync()
+        elif hasattr(backend, "_handle_resize"):
+            backend._handle_resize()
+
+    def _schedule_panda3d_size_sync(self, _attempts: int = 0) -> None:
+        """Poll until the Panda3D window matches the host widget size, then stop.
+
+        The Qt layout engine finalises child-widget sizes asynchronously after
+        ``show()``.  We retry with exponential back-off for up to ~1 second so
+        the Panda3D sub-window always fills its host.
+        """
+        if self._viewport_host is None or not isinstance(self._canvas, MazeCanvas):
+            return
+        backend = self._canvas._backend
+        if backend is None or not backend.is_ready():
+            return
+        backend._handle_resize()
+
+        # Compare in physical pixels (Qt uses device-independent pixels).
+        try:
+            dpr = float(self._viewport_host.devicePixelRatioF())
+        except Exception:
+            dpr = 1.0
+        host_px_w = max(1, int(round(self._viewport_host.width() * dpr)))
+        host_px_h = max(1, int(round(self._viewport_host.height() * dpr)))
+
+        base = getattr(backend, "_base", None)
+        win = base.win if base is not None else None
+        if win is None:
+            return
+        already_correct = win.getXSize() == host_px_w and win.getYSize() == host_px_h
+
+        if already_correct or _attempts >= 8:
+            return
+        delay_ms = min(50 * (2 ** _attempts), 400)
+        QTimer.singleShot(
+            delay_ms,
+            lambda: self._schedule_panda3d_size_sync(_attempts + 1),
+        )
 
     def _wire_signals(self) -> None:
         c = self._controller
@@ -252,7 +381,7 @@ class MainWindow(QMainWindow):
             )
 
     def _on_godot_process_started(self, pid: int) -> None:
-        if not self._can_embed_godot or self._godot_host is None:
+        if not self._can_embed_godot or self._viewport_host is None:
             return
         if self._godot_container is not None:
             return
@@ -317,7 +446,7 @@ class MainWindow(QMainWindow):
         return matches[0][0]
 
     def _attach_godot_window(self, win_id: int) -> None:
-        if self._godot_host is None or self._godot_host_layout is None:
+        if self._viewport_host is None or self._viewport_host_layout is None:
             return
         if self._godot_container is not None:
             return
@@ -326,16 +455,16 @@ class MainWindow(QMainWindow):
         if foreign is None:
             return
 
-        container = QWidget.createWindowContainer(foreign, self._godot_host)
+        container = QWidget.createWindowContainer(foreign, self._viewport_host)
         container.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-        while self._godot_host_layout.count() > 0:
-            item = self._godot_host_layout.takeAt(0)
+        while self._viewport_host_layout.count() > 0:
+            item = self._viewport_host_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
                 widget.deleteLater()
-        self._godot_host_layout.addWidget(container)
+        self._viewport_host_layout.addWidget(container)
 
         self._godot_foreign_window = foreign
         self._godot_container = container
@@ -349,15 +478,15 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(delay_ms, self._sync_embedded_godot_viewport)
 
     def _sync_embedded_godot_viewport(self) -> None:
-        if self._godot_host is None or self._godot_container is None:
+        if self._viewport_host is None or self._godot_container is None:
             return
-        host_w = max(1, self._godot_host.width())
-        host_h = max(1, self._godot_host.height())
+        host_w = max(1, self._viewport_host.width())
+        host_h = max(1, self._viewport_host.height())
         if self._godot_container.width() != host_w or self._godot_container.height() != host_h:
             self._godot_container.resize(host_w, host_h)
         self._godot_container.updateGeometry()
         self._godot_container.update()
-        self._godot_host.update()
+        self._viewport_host.update()
 
         if self._godot_foreign_window is not None:
             try:
@@ -367,13 +496,62 @@ class MainWindow(QMainWindow):
                 pass
 
     def eventFilter(self, watched: object, event: QEvent) -> bool:
-        if watched is self._godot_host and event.type() in {
+        if watched is self._viewport_host and event.type() in {
             QEvent.Type.Resize,
             QEvent.Type.Show,
             QEvent.Type.WindowStateChange,
         }:
-            self._sync_embedded_godot_viewport()
+            if self._renderer == "godot":
+                self._sync_embedded_godot_viewport()
+            elif self._renderer == "panda3d":
+                self._ensure_panda3d_started()
+                self._sync_panda3d_viewport()
+            elif self._renderer == "pygame":
+                self._ensure_pygame_started()
+                self._sync_pygame_viewport()
         return super().eventFilter(watched, event)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._renderer == "panda3d":
+            QTimer.singleShot(0, self._ensure_panda3d_started)
+        elif self._renderer == "pygame":
+            QTimer.singleShot(0, self._ensure_pygame_started)
+
+    def _sync_panda3d_viewport(self) -> None:
+        if not isinstance(self._canvas, MazeCanvas):
+            return
+        backend = self._canvas._backend
+        if backend is not None and hasattr(backend, "_handle_resize"):
+            backend._handle_resize()
+
+    def _ensure_pygame_started(self) -> None:
+        """Start Pygame backend lazily once the viewport is shown."""
+        if self._renderer != "pygame":
+            return
+        if not self._pygame_embedded:
+            return
+        if not isinstance(self._canvas, MazeCanvas):
+            return
+        viewport = getattr(self, "_pygame_viewport", None)
+        if viewport is None:
+            return
+        backend = self._canvas._backend
+        if backend is None:
+            return
+        if not backend.is_ready():
+            backend.start(viewport)
+        elif hasattr(backend, "_handle_resize"):
+            backend._handle_resize()
+
+    def _sync_pygame_viewport(self) -> None:
+        if not self._pygame_embedded:
+            return
+        if not isinstance(self._canvas, MazeCanvas):
+            return
+        backend = self._canvas._backend
+        if backend is not None and hasattr(backend, "_handle_resize"):
+            backend._handle_resize()
 
     def _on_game_completed(self, metrics: dict) -> None:
         if ScoreBoard and isinstance(self._scores, ScoreBoard):
@@ -382,6 +560,28 @@ class MainWindow(QMainWindow):
                 self._scores.show_scores(scores)
             except Exception:
                 pass
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        """Forward key events to the canvas so the 3D backend receives them."""
+        if (
+            self._renderer in ("panda3d", "pygame")
+            and MazeCanvas is not None
+            and isinstance(self._canvas, MazeCanvas)
+        ):
+            self._canvas.keyPressEvent(event)
+            return
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event) -> None:  # noqa: N802
+        """Forward key release events to the canvas so the 3D backend receives them."""
+        if (
+            self._renderer in ("panda3d", "pygame")
+            and MazeCanvas is not None
+            and isinstance(self._canvas, MazeCanvas)
+        ):
+            self._canvas.keyReleaseEvent(event)
+            return
+        super().keyReleaseEvent(event)
 
     def _on_facing_changed(self, direction: str) -> None:
         d = (direction or "").strip().upper()
@@ -443,7 +643,11 @@ def gui_main(config: StartupConfig | None = None) -> None:
 
     controller = GameController(engine, threaded=True)
 
-    window = MainWindow(controller, repo, use_godot=config.use_godot)
+    window = MainWindow(
+        controller, repo,
+        use_godot=config.use_godot,
+        renderer=config.renderer,
+    )
     window.setStyleSheet(_STYLESHEET)
     window.show()
 

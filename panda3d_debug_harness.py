@@ -1,13 +1,12 @@
-"""Minimal Godot draw harness for MazeCanvas.
+"""Panda3D debug harness for MazeCanvas with in-process renderer.
 
-This harness intentionally bypasses the full GUI stack and does one thing:
+Parallel to godot_debug_harness.py but uses the Panda3D backend.
+
   1) Build a real GameEngine instance
-  2) Pull `engine.view().maze_snapshot`
-  3) Feed that snapshot directly into `MazeCanvas`
-
-Use this to isolate whether Godot is rendering any maze geometry at all.
+  2) Pull engine.view().maze_snapshot
+  3) Feed that snapshot into MazeCanvas backed by Panda3DBackend
+  4) Optional automated angle sweep across all reachable positions
 """
-
 from __future__ import annotations
 
 import argparse
@@ -21,15 +20,18 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import (
     QApplication,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QPushButton,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
+from PyQt6.QtCore import Qt
 
 from db import HACKER_SEED_QUESTIONS, open_repo
 from gui.maze_canvas import MazeCanvas
-from gui.renderers.godot_backend import GodotBackend
+from gui.renderers.panda3d_backend import Panda3DBackend
 from main import (
     Command,
     GameEngine,
@@ -41,8 +43,7 @@ from main import (
 from maze import Direction, Position
 from puzzles import PuzzleRegistry
 
-
-log = logging.getLogger("godot_debug_harness")
+log = logging.getLogger("panda3d_debug_harness")
 
 
 def _gate_ids_from_maze(maze: object) -> list[str]:
@@ -54,10 +55,8 @@ def _gate_ids_from_maze(maze: object) -> list[str]:
 
 
 def _shortest_path_dirs(maze: object, start: Position, target: Position) -> list[str]:
-    """Return direction tokens from start -> target using BFS."""
     if start == target:
         return []
-
     q: deque[Position] = deque([start])
     parent: dict[Position, tuple[Position, str] | None] = {start: None}
     while q:
@@ -70,10 +69,8 @@ def _shortest_path_dirs(maze: object, start: Position, target: Position) -> list
                 continue
             parent[nxt] = (cur, direction.name)
             q.append(nxt)
-
     if target not in parent:
         return []
-
     rev: list[str] = []
     cur = target
     while cur != start:
@@ -85,7 +82,6 @@ def _shortest_path_dirs(maze: object, start: Position, target: Position) -> list
 
 
 def _reachable_positions(maze: object) -> list[Position]:
-    """Enumerate positions reachable from maze.start in row/col order."""
     start: Position = getattr(maze, "start")
     q: deque[Position] = deque([start])
     seen: set[Position] = {start}
@@ -104,7 +100,6 @@ def _reachable_positions(maze: object) -> list[Position]:
 
 
 def _build_sweep_actions(maze: object) -> list[tuple[str, str]]:
-    """Build deterministic action list: traverse all cells, show N/E/S/W at each."""
     actions: list[tuple[str, str]] = []
     current: Position = getattr(maze, "start")
     for target in _reachable_positions(maze):
@@ -123,7 +118,7 @@ def _build_engine(
     gates: int,
     reveal_all: bool,
 ) -> tuple[GameEngine, TemporaryDirectory]:
-    tmpdir = TemporaryDirectory(prefix="godot-harness-")
+    tmpdir = TemporaryDirectory(prefix="panda3d-harness-")
     save_path = Path(tmpdir.name) / "harness_save.db"
     repo = open_repo(save_path)
     _initialize_question_bank(repo, HACKER_SEED_QUESTIONS, reset_game=True)
@@ -134,7 +129,7 @@ def _build_engine(
         maze_seed=seed,
         num_gates=gates,
         gui=True,
-        use_godot=True,
+        use_godot=False,
     )
     maze = _build_maze(config)
     puzzles = PuzzleRegistry()
@@ -154,7 +149,6 @@ def _build_engine(
     initial_state = {
         "pos": {"row": maze.start.row, "col": maze.start.col},
         "move_count": 0,
-        # Solve gates in harness so movement buttons can test redraw freely.
         "solved_gates": _gate_ids_from_maze(maze),
         "started_at": _utc_now_iso(),
         "visited": visited,
@@ -187,7 +181,6 @@ class HarnessWindow(QWidget):
         self,
         *,
         engine: GameEngine,
-        use_godot: bool,
         sweep_angles: bool = False,
         sweep_step_ms: int = 250,
         auto_quit_on_sweep_done: bool = False,
@@ -203,21 +196,48 @@ class HarnessWindow(QWidget):
         self._sweep_idx = 0
         self._sweep_done = False
         self._sweep_errors: list[str] = []
-        self._seen_error_lines: set[str] = set()
         self._sweep_timer: QTimer | None = None
 
-        self.setWindowTitle("Godot Debug Harness — Engine View -> MazeCanvas")
-        self.resize(1000, 750)
+        self.setWindowTitle("Panda3D Debug Harness")
+        self.resize(1100, 750)
 
-        root = QVBoxLayout(self)
+        root = QHBoxLayout(self)
+
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._facing_label = QLabel("Facing: S")
+        self._facing_label.setStyleSheet("font-family: monospace; font-size: 14px; color: #9be79b;")
+        left_layout.addWidget(self._facing_label)
+
+        self._viewport_host = QWidget()
+        self._viewport_host.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+        self._viewport_host.setMinimumSize(500, 400)
+        self._viewport_host.setStyleSheet("background-color: #000;")
+
+        self._backend = Panda3DBackend()
+        self._canvas = MazeCanvas(use_godot=False, backend=self._backend)
+        self._canvas.direction_clicked.connect(self.move)
+        self._canvas.facing_changed.connect(self._on_facing_changed)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.addWidget(self._viewport_host)
+        splitter.addWidget(self._canvas)
+        splitter.setSizes([400, 250])
+        left_layout.addWidget(splitter)
+        root.addWidget(left, stretch=3)
+
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
 
         self._status = QLabel()
         self._status.setWordWrap(True)
-        self._status.setStyleSheet("font-family: monospace;")
-        root.addWidget(self._status)
+        self._status.setStyleSheet("font-family: monospace; font-size: 11px;")
+        right_layout.addWidget(self._status)
 
         controls = QGridLayout()
-        root.addLayout(controls)
+        right_layout.addLayout(controls)
 
         refresh_btn = QPushButton("Refresh From engine.view()")
         refresh_btn.clicked.connect(self.refresh_from_engine_view)
@@ -228,10 +248,16 @@ class HarnessWindow(QWidget):
             btn.clicked.connect(lambda _checked=False, d=direction: self.move(d))
             controls.addWidget(btn, 1 + idx // 2, idx % 2)
 
-        self._canvas = MazeCanvas(use_godot=use_godot)
-        # Route Godot WASD direction events back into the engine path.
-        self._canvas.direction_clicked.connect(self.move)
-        root.addWidget(self._canvas, 1)
+        for idx, face_dir in enumerate(("Q (Left)", "E (Right)")):
+            btn = QPushButton(f"Turn {face_dir}")
+            action = "turn_left" if idx == 0 else "turn_right"
+            btn.clicked.connect(lambda _checked=False, a=action: self._backend._handle_key_press(a))
+            controls.addWidget(btn, 3, idx)
+
+        right_layout.addStretch()
+        root.addWidget(right, stretch=1)
+
+        self._backend.start(self._viewport_host)
 
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self._update_status_text)
@@ -241,6 +267,10 @@ class HarnessWindow(QWidget):
 
         if self._sweep_enabled:
             self._start_sweep()
+
+    def _on_facing_changed(self, direction: str) -> None:
+        d = (direction or "").strip().upper()
+        self._facing_label.setText(f"Facing: {d if d in {'N','S','E','W'} else '?'}")
 
     def _apply_view(self, view: object) -> None:
         self._last_view = view
@@ -254,12 +284,7 @@ class HarnessWindow(QWidget):
         self._update_status_text()
 
     def _update_status_text(self) -> None:
-        backend = getattr(self._canvas, "_backend", None)
-        is_godot_backend = isinstance(backend, GodotBackend)
-        proc = getattr(backend, "_godot_process", None) if is_godot_backend else None
-        proc_state = proc.state().name if proc is not None else "NotStarted"
-        ws_port = getattr(backend, "_ws_port", 0) if is_godot_backend else 0
-        ws_connected = backend.is_ready() if backend is not None else False
+        backend_ready = self._backend.is_ready()
 
         if self._last_view is None:
             view_line = "view: <none>"
@@ -272,13 +297,11 @@ class HarnessWindow(QWidget):
             )
 
         lines = [
-            f"godot_backend={is_godot_backend}",
-            f"fallback_reason={self._canvas._fallback_reason or 'None'}",
-            f"ws_port={ws_port} ws_connected={ws_connected}",
-            f"godot_process_state={proc_state}",
+            f"backend_ready={backend_ready}",
+            f"renderer=Panda3D (in-process)",
             self._sweep_status_line(),
             view_line,
-            "last_engine_messages="
+            "messages="
             + (" | ".join(self._last_engine_messages) if self._last_engine_messages else "<none>"),
         ]
         self._status.setText("\n".join(lines))
@@ -305,7 +328,6 @@ class HarnessWindow(QWidget):
         self._sweep_idx = 0
         self._sweep_done = False
         self._sweep_errors.clear()
-        self._seen_error_lines.clear()
         self._sweep_timer = QTimer(self)
         self._sweep_timer.timeout.connect(self._run_sweep_step)
         self._sweep_timer.start(self._sweep_step_ms)
@@ -318,24 +340,6 @@ class HarnessWindow(QWidget):
         log.error("Sweep error: %s", msg)
         if self._sweep_timer and self._sweep_timer.isActive():
             self._sweep_timer.stop()
-
-    def _detect_runtime_errors(self) -> None:
-        if self._canvas._fallback_reason:
-            self._record_sweep_error(f"Fallback triggered: {self._canvas._fallback_reason}")
-
-        backend = getattr(self._canvas, "_backend", None)
-        if isinstance(backend, GodotBackend):
-            proc = getattr(backend, "_godot_process", None)
-            if proc is None or proc.state().name == "NotRunning":
-                self._record_sweep_error("Godot process is not running during sweep")
-
-        stderr_tail = getattr(backend, "_godot_stderr_tail", []) if backend is not None else []
-        for line in stderr_tail:
-            up = line.upper()
-            if any(token in up for token in ("SCRIPT ERROR", "SHADER ERROR", "ERROR:")):
-                if line not in self._seen_error_lines:
-                    self._seen_error_lines.add(line)
-                    self._record_sweep_error(f"Godot stderr: {line}")
 
     def _finish_sweep(self) -> None:
         self._sweep_done = True
@@ -352,7 +356,7 @@ class HarnessWindow(QWidget):
                 print(f" - {err}")
             self._last_engine_messages = [summary]
         else:
-            summary = f"SWEEP PASS: {len(self._sweep_actions)} actions, no Godot errors detected"
+            summary = f"SWEEP PASS: {len(self._sweep_actions)} actions, no errors detected"
             print(summary)
             log.info(summary)
             self._last_engine_messages = [summary]
@@ -362,17 +366,14 @@ class HarnessWindow(QWidget):
         if self._auto_quit_on_sweep_done:
             app = QApplication.instance()
             if app is not None:
-                def _shutdown() -> None:
-                    self.shutdown_and_quit(app, quit_delay_ms=150)
-
-                QTimer.singleShot(300, _shutdown)
+                QTimer.singleShot(300, lambda: self._shutdown_and_quit(app))
 
     def _run_sweep_step(self) -> None:
         if self._sweep_done:
             return
 
-        self._detect_runtime_errors()
-        if self._sweep_errors:
+        if not self._backend.is_ready():
+            self._record_sweep_error("Panda3D backend not ready during sweep")
             self._finish_sweep()
             return
 
@@ -395,36 +396,28 @@ class HarnessWindow(QWidget):
             self._canvas.set_view_direction(payload)
             self._last_engine_messages = [f"face {payload}"]
 
-        self._detect_runtime_errors()
         if self._sweep_errors:
             self._finish_sweep()
 
-    def shutdown_and_quit(self, app: QApplication, *, quit_delay_ms: int = 150) -> None:
-        """Terminate Godot cleanly before quitting the Qt app."""
-        backend = getattr(self._canvas, "_backend", None)
-        if backend is not None:
-            try:
-                backend.stop()
-            except Exception:
-                pass
+    def _shutdown_and_quit(self, app: QApplication) -> None:
+        self._backend.stop()
         self.close()
-        QTimer.singleShot(quit_delay_ms, app.quit)
+        QTimer.singleShot(150, app.quit)
+
+    def closeEvent(self, event) -> None:
+        self._backend.stop()
+        super().closeEvent(event)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Engine view -> MazeCanvas Godot debug harness")
+    parser = argparse.ArgumentParser(description="Panda3D debug harness for MazeCanvas")
     parser.add_argument("--size", type=int, default=5, help="Maze size (default: 5)")
     parser.add_argument("--seed", type=int, default=42, help="Maze seed (default: 42)")
     parser.add_argument("--gates", type=int, default=2, help="Number of gates (default: 2)")
     parser.add_argument(
-        "--no-godot",
-        action="store_true",
-        help="Disable Godot and force 2D fallback in MazeCanvas",
-    )
-    parser.add_argument(
         "--hide-unvisited",
         action="store_true",
-        help="Use engine's normal fog of war (default is reveal-all for visibility)",
+        help="Use engine's normal fog of war (default is reveal-all)",
     )
     parser.add_argument(
         "--sweep-angles",
@@ -435,7 +428,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--sweep-step-ms",
         type=int,
         default=200,
-        help="Step interval for --sweep-angles actions (default: 200ms)",
+        help="Step interval for --sweep-angles (default: 200ms)",
     )
     parser.add_argument(
         "--auto-quit-on-sweep-done",
@@ -446,13 +439,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--auto-quit-seconds",
         type=float,
         default=0.0,
-        help="Auto-close harness after N seconds (useful for quick smoke runs)",
+        help="Auto-close harness after N seconds",
     )
     parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Python-side logging level",
     )
     return parser.parse_args(argv)
 
@@ -470,17 +462,11 @@ def main(argv: list[str] | None = None) -> int:
         gates=args.gates,
         reveal_all=not args.hide_unvisited,
     )
-    log.info(
-        "Built harness engine with size=%d seed=%d gates=%d",
-        args.size,
-        args.seed,
-        args.gates,
-    )
+    log.info("Built harness engine with size=%d seed=%d gates=%d", args.size, args.seed, args.gates)
 
     app = QApplication.instance() or QApplication(sys.argv)
     window = HarnessWindow(
         engine=engine,
-        use_godot=not args.no_godot,
         sweep_angles=args.sweep_angles,
         sweep_step_ms=args.sweep_step_ms,
         auto_quit_on_sweep_done=args.auto_quit_on_sweep_done,
@@ -489,10 +475,10 @@ def main(argv: list[str] | None = None) -> int:
     window.show()
 
     if args.auto_quit_seconds > 0:
-        def _shutdown() -> None:
-            window.shutdown_and_quit(app, quit_delay_ms=200)
-
-        QTimer.singleShot(int(args.auto_quit_seconds * 1000), _shutdown)
+        QTimer.singleShot(
+            int(args.auto_quit_seconds * 1000),
+            lambda: window._shutdown_and_quit(app),
+        )
 
     exit_code = app.exec()
     tempdir.cleanup()

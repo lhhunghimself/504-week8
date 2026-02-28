@@ -21,7 +21,8 @@ def test_parse_startup_flags_defaults():
     assert cfg.maze_size == 3
     assert cfg.maze_seed == 0
     assert cfg.num_gates == 1
-    assert cfg.use_godot is True
+    assert cfg.use_godot is False
+    assert cfg.renderer == "panda3d"
 
 
 def test_parse_startup_flags_detects_reset_flag():
@@ -56,7 +57,7 @@ def test_parse_startup_flags_gui():
     cfg = main._parse_startup_flags(["--gui"])
     assert cfg.gui is True
     assert cfg.maze_size == 3
-    assert cfg.use_godot is True
+    assert cfg.renderer == "panda3d"
 
 
 def test_parse_startup_flags_no_godot():
@@ -64,19 +65,21 @@ def test_parse_startup_flags_no_godot():
     cfg = main._parse_startup_flags(["--gui", "--no-godot"])
     assert cfg.gui is True
     assert cfg.use_godot is False
+    assert cfg.renderer == "panda3d"
 
 
 def test_parse_startup_flags_all_combined():
     main = _import_main()
     cfg = main._parse_startup_flags(
-        ["--size", "5", "--seed", "99", "--gates", "2", "--reset-game", "--gui", "--no-godot"]
+        ["--size", "5", "--seed", "99", "--gates", "2", "--reset-game", "--gui", "--renderer", "godot"]
     )
     assert cfg.maze_size == 5
     assert cfg.maze_seed == 99
     assert cfg.num_gates == 2
     assert cfg.reset_game is True
     assert cfg.gui is True
-    assert cfg.use_godot is False
+    assert cfg.renderer == "godot"
+    assert cfg.use_godot is True
 
 
 def test_parse_startup_flags_rejects_unknown_arguments():
@@ -105,6 +108,58 @@ def test_parse_startup_flags_missing_value():
         main._parse_startup_flags(["--seed"])
     with pytest.raises(ValueError, match="requires a value"):
         main._parse_startup_flags(["--gates"])
+
+
+def test_parse_startup_flags_renderer_panda3d():
+    main = _import_main()
+    cfg = main._parse_startup_flags(["--gui", "--renderer", "panda3d"])
+    assert cfg.renderer == "panda3d"
+    assert cfg.use_godot is False
+
+
+def test_parse_startup_flags_renderer_godot():
+    main = _import_main()
+    cfg = main._parse_startup_flags(["--gui", "--renderer", "godot"])
+    assert cfg.renderer == "godot"
+    assert cfg.use_godot is True
+
+
+def test_parse_startup_flags_renderer_pygame():
+    main = _import_main()
+    cfg = main._parse_startup_flags(["--gui", "--renderer", "pygame"])
+    assert cfg.renderer == "pygame"
+    assert cfg.use_godot is False
+
+
+def test_parse_startup_flags_renderer_pygame_with_no_godot():
+    main = _import_main()
+    cfg = main._parse_startup_flags(["--gui", "--renderer", "pygame", "--no-godot"])
+    assert cfg.renderer == "pygame"
+    assert cfg.use_godot is False
+
+
+def test_parse_startup_flags_renderer_invalid():
+    main = _import_main()
+    with pytest.raises(ValueError, match="panda3d.*godot.*pygame"):
+        main._parse_startup_flags(["--renderer", "vulkan"])
+
+
+def test_parse_startup_flags_renderer_missing_value():
+    main = _import_main()
+    with pytest.raises(ValueError, match="requires a value"):
+        main._parse_startup_flags(["--renderer"])
+
+
+def test_parse_startup_flags_renderer_conflicts_with_no_godot():
+    main = _import_main()
+    with pytest.raises(ValueError, match="Cannot combine .*godot.*--no-godot"):
+        main._parse_startup_flags(["--renderer", "godot", "--no-godot"])
+
+
+def test_parse_startup_flags_renderer_conflict_is_order_independent():
+    main = _import_main()
+    with pytest.raises(ValueError, match="Cannot combine .*godot.*--no-godot"):
+        main._parse_startup_flags(["--no-godot", "--renderer", "godot"])
 
 
 # ---------------------------------------------------------------------------

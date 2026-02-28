@@ -328,10 +328,12 @@ class GameEngine:
                     hint_options=None,
                 )
 
-            hint_type = args[0].strip().lower() if args else ""
+            hint_type = args[0].strip().lower() if args else None
+            if hint_type == "":
+                hint_type = None
 
             # Step 1: no type given — return available options for the UI to display
-            if hint_type == "":
+            if hint_type is None:
                 return GameOutput(
                     view=self._make_view(),
                     messages=["Choose a hint type:"],
@@ -554,11 +556,15 @@ class StartupConfig:
     maze_seed: int = 0
     num_gates: int = 1
     gui: bool = False
+    use_godot: bool = False
+    renderer: str = "qpaint"
 
 
 def _parse_startup_flags(argv: list[str]) -> StartupConfig:
     """Parse CLI startup flags into a StartupConfig."""
     config = StartupConfig()
+    explicit_renderer: str | None = None
+    no_godot_flag = False
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -566,6 +572,16 @@ def _parse_startup_flags(argv: list[str]) -> StartupConfig:
             config.reset_game = True
         elif arg == "--gui":
             config.gui = True
+        elif arg == "--no-godot":
+            no_godot_flag = True
+        elif arg == "--renderer":
+            i += 1
+            if i >= len(argv):
+                raise ValueError("--renderer requires a value (panda3d, godot, or pygame)")
+            val = argv[i].lower()
+            if val not in ("panda3d", "godot", "pygame", "qpaint"):
+                raise ValueError(f"--renderer must be 'panda3d', 'godot', 'pygame', or 'qpaint', got '{val}'")
+            explicit_renderer = val
         elif arg == "--size":
             i += 1
             if i >= len(argv):
@@ -590,6 +606,18 @@ def _parse_startup_flags(argv: list[str]) -> StartupConfig:
         else:
             raise ValueError(f"Unknown argument(s): {arg}")
         i += 1
+
+    # Normalize renderer selection after parsing so semantics are order-independent.
+    if explicit_renderer == "godot" and no_godot_flag:
+        raise ValueError("Cannot combine --renderer godot with --no-godot")
+
+    if explicit_renderer is not None:
+        config.renderer = explicit_renderer
+        config.use_godot = explicit_renderer == "godot"
+    elif no_godot_flag:
+        config.renderer = "qpaint"
+        config.use_godot = False
+
     return config
 
 
@@ -632,7 +660,10 @@ def cli_main(argv: list[str] | None = None) -> None:
         config = _parse_startup_flags(argv)
     except ValueError as e:
         print(e)
-        print("Usage: python main.py [--gui] [--size N] [--seed N] [--gates N] [--reset-game]")
+        print(
+            "Usage: python main.py [--gui] [--renderer panda3d|godot|pygame|qpaint] "
+            "[--no-godot] [--size N] [--seed N] [--gates N] [--reset-game]"
+        )
         return
 
     if config.gui:

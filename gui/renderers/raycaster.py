@@ -454,7 +454,7 @@ def render_frame(
     # --- Walls (column-by-column, vectorized within each strip) ------------
     for col in range(width):
         camera_x = camera_xs[col]
-        ray_angle = player_angle + math.atan2(camera_x * tan_half, 1.0)
+        ray_angle = player_angle + math.atan2(-camera_x * tan_half, 1.0)
 
         hit = cast_ray(grid, player_x, player_y, ray_angle)
         if hit is None:

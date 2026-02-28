@@ -14,8 +14,12 @@ import logging
 import math
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+import numpy as np
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
+from PyQt6.QtGui import (
+    QBrush, QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap,
+    QPolygonF, QTransform,
+)
 from PyQt6.QtWidgets import QWidget
 
 from gui.renderers.base_backend import BaseBackend
@@ -40,14 +44,15 @@ _COL_GATE_SOLVED = QColor("#53bf6a")
 _COL_START = QColor("#0f3460")
 _COL_EXIT = QColor("#533483")
 
-# Depth fog multipliers (0=near, 1=mid, 2=far)
-_FOG_ALPHA = [0, 60, 130]
+# Depth fog multipliers (0=near, 1=mid, 2=far) — kept light since
+# _apply_lighting handles most depth-based darkening per-pixel.
+_FOG_ALPHA = [0, 25, 60]
 
 # ---------------------------------------------------------------------------
 # Procedural textures (64x64, cached on first use)
 # ---------------------------------------------------------------------------
 
-_TEX_SIZE = 64
+_TEX_SIZE = 128
 _texture_cache: dict[str, QPixmap] = {}
 
 
@@ -326,8 +331,8 @@ _TEXTURE_GENERATORS: dict[str, callable] = {
 # (left_x, right_x, top_y, bottom_y) for each depth layer
 _DEPTH_BOUNDS: list[tuple[float, float, float, float]] = [
     (0.00, 1.00, 0.00, 1.00),  # depth 0 — full screen
-    (0.15, 0.85, 0.15, 0.85),  # depth 1 — mid corridor
-    (0.30, 0.70, 0.30, 0.70),  # depth 2 — far corridor
+    (0.15, 0.85, 0.22, 0.90),  # depth 1 — ceiling recedes faster
+    (0.30, 0.70, 0.45, 0.81),  # depth 2 — far end sits low on screen
 ]
 
 _HALF_PI = math.pi / 2
@@ -431,6 +436,15 @@ def _wall_texture(cell: _Cell | None) -> QPixmap:
     return _get_texture("stone")
 
 
+def _scaled_brush(texture: QPixmap, target_w: float, target_h: float) -> QBrush:
+    """Return a QBrush whose transform scales the texture to fill *target* size."""
+    sx = max(target_w, 1.0) / texture.width()
+    sy = max(target_h, 1.0) / texture.height()
+    brush = QBrush(texture)
+    brush.setTransform(QTransform.fromScale(sx, sy))
+    return brush
+
+
 def _draw_textured_poly(
     p: QPainter,
     poly: QPolygonF,
@@ -438,13 +452,16 @@ def _draw_textured_poly(
     fog_depth: int = 0,
     darken: int = 0,
 ) -> None:
-    """Fill *poly* with a tiled *texture*, then apply optional darkening and fog."""
+    """Fill *poly* with *texture* stretched to its bounding box, then fog/darken."""
     path = QPainterPath()
     path.addPolygon(poly)
     p.save()
     p.setClipPath(path)
     br = poly.boundingRect()
-    p.fillRect(br, QBrush(texture))
+    brush = _scaled_brush(texture, br.width(), br.height())
+    brush_origin = br.topLeft()
+    p.setBrushOrigin(brush_origin)
+    p.fillRect(br, brush)
     if darken > 0:
         p.fillRect(br, QColor(0, 0, 0, darken))
     if 0 < fog_depth < len(_FOG_ALPHA) and _FOG_ALPHA[fog_depth] > 0:
@@ -461,9 +478,11 @@ def _draw_textured_rect(
     fog_depth: int = 0,
     darken: int = 0,
 ) -> None:
-    """Fill *rect* with a tiled *texture*, then apply optional darkening and fog."""
+    """Fill *rect* with *texture* stretched to fit, then fog/darken."""
     p.save()
-    p.fillRect(rect, QBrush(texture))
+    brush = _scaled_brush(texture, rect.width(), rect.height())
+    p.setBrushOrigin(rect.topLeft())
+    p.fillRect(rect, brush)
     if darken > 0:
         p.fillRect(rect, QColor(0, 0, 0, darken))
     if 0 < fog_depth < len(_FOG_ALPHA) and _FOG_ALPHA[fog_depth] > 0:
@@ -473,12 +492,79 @@ def _draw_textured_rect(
     p.restore()
 
 
+# ---------------------------------------------------------------------------
+# Per-pixel lighting pass (numpy) — runs once per pre-rendered view
+# ---------------------------------------------------------------------------
+
+def _apply_lighting(pixmap: QPixmap) -> QPixmap:
+    """Per-pixel lighting: point lights, specular, vignette, ambient occlusion.
+
+    Since only ~100 views are pre-rendered at maze load time, we can afford
+    full per-pixel numpy work to simulate Godot's OmniLight3D + PBR materials.
+    """
+    img = pixmap.toImage().convertToFormat(QImage.Format.Format_ARGB32)
+    ptr = img.bits()
+    ptr.setsize(img.sizeInBytes())
+    arr = np.frombuffer(ptr, dtype=np.uint8).reshape(
+        (img.height(), img.width(), 4)
+    ).copy()
+
+    h, w = arr.shape[:2]
+    ys = np.linspace(0.0, 1.0, h, dtype=np.float32)
+    xs = np.linspace(0.0, 1.0, w, dtype=np.float32)
+    xg, yg = np.meshgrid(xs, ys)
+
+    # Point light at vanishing point (wall sconce in the next cell)
+    vp_x, vp_y = 0.50, 0.67
+    d1 = np.sqrt((xg - vp_x) ** 2 + ((yg - vp_y) * 1.3) ** 2)
+    light1 = np.maximum(0.0, 1.0 - d1 * 2.2) ** 1.6 * 0.65
+
+    # Torch light from player position (warm, below eye level)
+    d2 = np.sqrt((xg - 0.50) ** 2 + ((yg - 0.90) * 0.7) ** 2)
+    light2 = np.maximum(0.0, 1.0 - d2 * 1.6) ** 2.0 * 0.45
+
+    # Specular highlight — concentrated bright spot at the vanishing point
+    d_spec = np.sqrt((xg - vp_x) ** 2 + ((yg - vp_y) * 1.5) ** 2)
+    specular = np.maximum(0.0, 1.0 - d_spec * 4.0) ** 3.0 * 0.25
+
+    # Combine: ambient base + two point lights
+    light = np.float32(0.30) + light1 + light2
+
+    # Floor / ceiling ambient occlusion
+    ao_floor = np.clip((yg - 0.85) * 5.0, 0.0, 1.0) * 0.12
+    ao_ceil = np.clip((0.10 - yg) * 5.0, 0.0, 1.0) * 0.08
+    light -= (ao_floor + ao_ceil)
+
+    # Vignette (darken edges, centred slightly above midpoint)
+    dc = np.sqrt(((xg - 0.5) * 1.3) ** 2 + ((yg - 0.55) * 1.0) ** 2)
+    vignette = np.clip(1.0 - np.maximum(0.0, dc - 0.45) * 1.5, 0.25, 1.0)
+    light *= vignette
+
+    light = np.clip(light, 0.0, 1.4)
+
+    # QImage ARGB32 on little-endian x86: byte order is B, G, R, A
+    b = arr[:, :, 0].astype(np.float32)
+    g = arr[:, :, 1].astype(np.float32)
+    r = arr[:, :, 2].astype(np.float32)
+
+    # Green-tinted point light (matches Godot's green OmniLight3D)
+    arr[:, :, 0] = np.clip(b * light * 0.82 + specular * 120.0, 0, 255).astype(np.uint8)
+    arr[:, :, 1] = np.clip(g * light * 1.12 + specular * 200.0, 0, 255).astype(np.uint8)
+    arr[:, :, 2] = np.clip(r * light * 0.92 + specular * 160.0, 0, 255).astype(np.uint8)
+
+    result_img = QImage(
+        arr.data, w, h, img.bytesPerLine(), QImage.Format.Format_ARGB32
+    ).copy()
+    return QPixmap.fromImage(result_img)
+
+
 def render_view(grid: _Grid, row: int, col: int, facing: str) -> QPixmap:
     """Render a first-person dungeon-crawler view as a QPixmap."""
     pixmap = QPixmap(_VIEW_W, _VIEW_H)
     pixmap.fill(_COL_FOG)
     p = QPainter(pixmap)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
     w, h = float(_VIEW_W), float(_VIEW_H)
     fwd_dr, fwd_dc = _DIR_DELTA[facing]
@@ -497,7 +583,7 @@ def render_view(grid: _Grid, row: int, col: int, facing: str) -> QPixmap:
         if depth < 2:
             nlx, nrx, nty, nby = _DEPTH_BOUNDS[depth + 1]
         else:
-            nlx, nrx, nty, nby = 0.40, 0.60, 0.40, 0.60
+            nlx, nrx, nty, nby = 0.42, 0.58, 0.56, 0.78
 
         # Floor
         floor_poly = QPolygonF([
@@ -547,7 +633,7 @@ def render_view(grid: _Grid, row: int, col: int, facing: str) -> QPixmap:
                 QPointF(lx * w, by * h),
             ])
             _draw_textured_poly(p, left_poly, wall_tex,
-                                fog_depth=depth, darken=50)
+                                fog_depth=depth, darken=30)
 
         # Right wall
         if has_right_wall:
@@ -558,7 +644,7 @@ def render_view(grid: _Grid, row: int, col: int, facing: str) -> QPixmap:
                 QPointF(rx * w, by * h),
             ])
             _draw_textured_poly(p, right_poly, wall_tex,
-                                fog_depth=depth, darken=50)
+                                fog_depth=depth, darken=30)
 
         # Front wall
         if has_front_wall:
@@ -594,7 +680,7 @@ def render_view(grid: _Grid, row: int, col: int, facing: str) -> QPixmap:
         p.drawLine(QPointF(lx * w, by * h), QPointF(rx * w, by * h))
 
     p.end()
-    return pixmap
+    return _apply_lighting(pixmap)
 
 
 def _draw_cell_indicator(p: QPainter, cell: _Cell, w: float, h: float) -> None:
@@ -674,6 +760,7 @@ class QPaintBackend(BaseBackend):
         self._grid: _Grid | None = None
         self._current_snapshot: dict | None = None
         self._view_cache: dict[tuple[int, int, str], QPixmap] = {}
+        self._pending_prerender: list[tuple[int, int, str]] = []
 
         self._player_row = 0
         self._player_col = 0
@@ -776,28 +863,63 @@ class QPaintBackend(BaseBackend):
     # -- Cache management ----------------------------------------------------
 
     def _rebuild_cache(self) -> None:
-        """Pre-render all (row, col, facing) views for visible cells."""
+        """Clear cache; the current view is rendered on demand and adjacent
+        views are pre-rendered in the background via QTimer."""
         self._view_cache.clear()
-        if self._grid is None:
-            return
-        grid = self._grid
-        for (r, c), cell in grid._cells.items():
-            if cell.visible:
-                for facing in ("N", "S", "E", "W"):
-                    key = (r, c, facing)
-                    self._view_cache[key] = render_view(grid, r, c, facing)
-        log.debug("QPaint cache: %d views pre-rendered", len(self._view_cache))
+        self._pending_prerender.clear()
 
     def _update_display(self) -> None:
-        """Look up the current view and trigger a repaint."""
+        """Render current view if needed, display it, then schedule
+        pre-rendering of adjacent views reachable by one action."""
         key = (self._player_row, self._player_col, self._facing_str)
         pm = self._view_cache.get(key)
         if pm is None and self._grid is not None:
-            pm = render_view(self._grid, self._player_row,
-                             self._player_col, self._facing_str)
+            pm = render_view(self._grid, *key)
+            self._view_cache[key] = pm
         self._current_pixmap = pm
         if self._viewport is not None:
             self._viewport.update()
+        self._schedule_prerender()
+
+    def _schedule_prerender(self) -> None:
+        """Queue views reachable by one action (turn/step) for background
+        rendering so the next navigation feels instant."""
+        if self._grid is None:
+            return
+        r, c, f = self._player_row, self._player_col, self._facing_str
+        keys: list[tuple[int, int, str]] = []
+
+        # Other three facings at current position (turns)
+        for nf in ("N", "S", "E", "W"):
+            if nf != f:
+                keys.append((r, c, nf))
+
+        # Forward cell — all facings
+        fwd_dr, fwd_dc = _DIR_DELTA[f]
+        nr, nc = r + fwd_dr, c + fwd_dc
+        if self._grid.cell(nr, nc) is not None:
+            for nf in ("N", "S", "E", "W"):
+                keys.append((nr, nc, nf))
+
+        # Backward cell — all facings
+        br, bc = r - fwd_dr, c - fwd_dc
+        if self._grid.cell(br, bc) is not None:
+            for nf in ("N", "S", "E", "W"):
+                keys.append((br, bc, nf))
+
+        self._pending_prerender = [k for k in keys if k not in self._view_cache]
+        if self._pending_prerender:
+            QTimer.singleShot(0, self._render_next_pending)
+
+    def _render_next_pending(self) -> None:
+        """Render one pending adjacent view per event-loop iteration."""
+        if not self._pending_prerender or self._grid is None:
+            return
+        key = self._pending_prerender.pop(0)
+        if key not in self._view_cache:
+            self._view_cache[key] = render_view(self._grid, *key)
+        if self._pending_prerender:
+            QTimer.singleShot(0, self._render_next_pending)
 
     def _sync_player_from_snapshot(self, snapshot_dict: dict) -> None:
         """Extract player position from the snapshot."""

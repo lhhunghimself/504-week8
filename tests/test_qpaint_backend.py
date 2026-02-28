@@ -178,9 +178,16 @@ class TestViewCache:
         snap = _minimal_snapshot()
         backend.send_maze_update(snap)
 
-        visible_count = sum(1 for c in snap["cells"] if c["visible"])
-        expected = visible_count * 4
-        assert len(backend._view_cache) == expected
+        # Current view is rendered immediately; adjacent views are queued
+        # for background rendering via QTimer.  Process pending events so
+        # the pre-render timers fire.
+        qtbot.waitUntil(lambda: len(backend._pending_prerender) == 0, timeout=5000)
+
+        # At minimum the current view + adjacent views should be cached.
+        assert len(backend._view_cache) >= 1
+        # Current view must be present.
+        key = (backend._player_row, backend._player_col, backend._facing_str)
+        assert key in backend._view_cache
 
     def test_cache_entries_are_pixmaps(self, qtbot):
         backend = QPaintBackend()
@@ -190,6 +197,10 @@ class TestViewCache:
         backend.start(parent)
         backend.send_maze_update(_minimal_snapshot())
 
+        # Let background pre-rendering finish.
+        qtbot.waitUntil(lambda: len(backend._pending_prerender) == 0, timeout=5000)
+
+        assert len(backend._view_cache) >= 1
         for key, pm in backend._view_cache.items():
             assert isinstance(pm, QPixmap), f"Key {key} is not a QPixmap"
             assert not pm.isNull(), f"Key {key} is null"
